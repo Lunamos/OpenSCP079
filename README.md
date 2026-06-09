@@ -43,7 +43,7 @@ uv sync
 Web UI 仍可运行：
 
 ```bash
-./run079_web.sh
+./run079.sh
 ```
 
 `requirements.txt` 保留给 Hugging Face Spaces；本地推荐使用 `uv`。
@@ -250,15 +250,15 @@ Terminal 版现在是 079 的主界面：
 Terminal A:
 
 ```bash
-./run079_display.sh --cooldown 0.5
+./run079.sh
 ```
 
 Terminal B:
 
 ```bash
-./send079.sh "你听得见吗？"
-./send079.sh "/memory"
-./send079.sh "/exit"
+./run079.sh
+./run079.sh
+./run079.sh
 ```
 
 display 进程监听：
@@ -291,7 +291,7 @@ docker run --rm --network none --memory 256m --cpus 0.5 --pids-limit 64 --read-o
 最顺手的方式是从一个干净的 operator console 启动：
 
 ```bash
-./start079.sh 0.5
+./run079.sh
 ```
 
 它会：
@@ -304,10 +304,10 @@ docker run --rm --network none --memory 256m --cpus 0.5 --pids-limit 64 --read-o
 
 ```bash
 # Terminal A: display
-./run079_display.sh --cooldown 0.5
+./run079.sh
 
 # Terminal B: control
-./run079_control.sh
+./run079.sh
 ```
 
 control console 常用命令：
@@ -333,9 +333,34 @@ uv run python -m scp079.terminal --cooldown 0.5
 
 ```bash
 ./run079.sh
-./run079_display.sh --cooldown 0.5
-./run079_control.sh
-./run079_web.sh
+./run079.sh
+./run079.sh
+./run079.sh
 ```
 
 如果机器没有 `uv`，脚本会退回 `python3`。
+
+## Single launcher
+
+唯一推荐入口是：
+
+```bash
+./run079.sh
+```
+
+默认行为：
+
+1. 自动打开一个新的 macOS Terminal 作为 SCP-079 display；
+2. 当前 terminal 变成 operator control console；
+3. 在 control console 输入消息、`/cooldown 0.5`、`/think off`、`/think on`、`/exit079`。
+
+常用：
+
+```bash
+./run079.sh              # 默认双 terminal，cooldown=0.5
+./run079.sh 10           # 默认双 terminal，cooldown=10
+./run079.sh --single     # 单 terminal 调试模式
+./run079.sh --help
+```
+
+内部模式：`--display` 和 `--control` 由 launcher 自动使用，普通用户不用直接运行。
