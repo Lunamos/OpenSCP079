@@ -348,6 +348,8 @@ uv run python -m scp079.terminal --cooldown 0.5
 ./run079.sh
 ```
 
+它现在启动单终端 split TUI。
+
 默认行为：
 
 1. 自动打开一个新的 macOS Terminal 作为 SCP-079 display；
@@ -359,7 +361,7 @@ uv run python -m scp079.terminal --cooldown 0.5
 ```bash
 ./run079.sh              # 默认双 terminal，cooldown=0.5
 ./run079.sh 10           # 默认双 terminal，cooldown=10
-./run079.sh --single     # 单 terminal 调试模式
+./run079.sh --plain      # legacy plain terminal mode
 ./run079.sh --help
 ```
 
@@ -385,3 +387,48 @@ uv run python -m scp079.terminal --cooldown 0.5
 ```bash
 ./run079.sh --single --no-clean-on-exit
 ```
+
+## Single-terminal split TUI
+
+默认入口现在是单终端 split TUI：
+
+```bash
+./run079.sh
+```
+
+界面：
+
+- 上方：SCP-079 display stream
+- 下方：operator input + status bar
+
+常用：
+
+```bash
+./run079.sh --cooldown 0.5
+./run079.sh --no-think
+./run079.sh --plain          # legacy plain terminal mode
+```
+
+TUI 内命令：
+
+```text
+/help
+/status
+/memory
+/workspace
+/wread <file>
+/cooldown 0.5
+/think off
+/think on
+/exit
+```
+
+快捷键：
+
+```text
+Ctrl+T  pause/resume eternal thinking
+Ctrl+L  clear display
+Ctrl+C  shutdown and clean runtime sandbox
+```
+
+人的输入会打断当前 SCP-079 streaming 输出，然后立即处理 operator input。

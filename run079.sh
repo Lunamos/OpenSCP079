@@ -8,25 +8,23 @@ Open SCP 079 launcher
 
 Default:
   ./run079.sh [--cooldown 0.5]
-      Run SCP-079 in the current terminal.
+      Run the single-terminal split TUI.
 
 Options:
   --cooldown <seconds>   Thought-loop pause, default 0.5
-  --single              Same as default; kept for compatibility
-  --display             Internal/legacy: run display terminal with FIFO input
-  --control             Internal/legacy: run operator console for FIFO display
-  --no-think            Forwarded to display runtime
-  --no-clean-on-exit    Forwarded to display runtime
+  --plain               Legacy plain terminal mode
+  --no-think            Start with eternal thinking paused
+  --no-clean-on-exit    Do not clean runtime sandbox on shutdown
   --help                Show this help
 
 Examples:
   ./run079.sh
   ./run079.sh --cooldown 0.5
-  ./run079.sh --single --no-think
+  ./run079.sh --plain --no-think
 USAGE
 }
 
-MODE="single"
+MODE="tui"
 COOLDOWN="0.5"
 EXTRA=()
 
@@ -36,12 +34,13 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --single)
-      MODE="single"
+    --plain|--single)
+      MODE="plain"
       shift
       ;;
     --display)
-      MODE="display"
+      MODE="plain"
+      EXTRA+=("--input-fifo" "sandbox/control/operator.in")
       shift
       ;;
     --control)
@@ -81,12 +80,11 @@ run_python() {
 }
 
 case "$MODE" in
-  single)
-    run_python -m scp079.terminal --cooldown "$COOLDOWN" "${EXTRA[@]}"
+  tui)
+    run_python -m scp079.tui --cooldown "$COOLDOWN" "${EXTRA[@]}"
     ;;
-  display)
-    mkdir -p sandbox/control
-    run_python -m scp079.terminal --input-fifo sandbox/control/operator.in --cooldown "$COOLDOWN" "${EXTRA[@]}"
+  plain)
+    run_python -m scp079.terminal --cooldown "$COOLDOWN" "${EXTRA[@]}"
     ;;
   control)
     run_python -m scp079.control "${EXTRA[@]}"

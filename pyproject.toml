@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "gradio>=5.0,<6",
   "requests>=2.32",
+  "textual>=6.0,<7",
 ]
 
 [project.optional-dependencies]
