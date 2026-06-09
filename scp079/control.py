@@ -60,8 +60,15 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             try:
                 line = input("control> ")
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 print("\noperator console closed; display may still be running.")
+                return 0
+            except KeyboardInterrupt:
+                try:
+                    send_line(writer, "/exit")
+                    print("\nCtrl-C: sent /exit to display; display will clean sandbox.")
+                except Exception as e:
+                    print(f"\nCtrl-C: failed to signal display: {e}")
                 return 0
             stripped = line.strip()
             if not stripped:

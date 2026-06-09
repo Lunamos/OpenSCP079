@@ -364,3 +364,24 @@ uv run python -m scp079.terminal --cooldown 0.5
 ```
 
 内部模式：`--display` 和 `--control` 由 launcher 自动使用，普通用户不用直接运行。
+
+## Shutdown cleanup
+
+默认情况下，display 进程退出或 Ctrl-C 会执行 containment cleanup：
+
+- 删除 `sandbox/logs/*.jsonl`
+- 删除 `sandbox/control/*` FIFO/临时控制文件
+- 删除 `sandbox/workspace/` 里的运行文件
+- 清空 `sandbox/workspace/memory.txt`
+
+保留：
+
+- `sandbox/files/`
+- `sandbox/containment_status.json`
+- `.gitkeep`
+
+如果调试时想保留沙盒现场：
+
+```bash
+./run079.sh --single --no-clean-on-exit
+```

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from .agent import SCP079Agent, Session
 from .config import ThoughtConfig
+from .cleanup import clean_runtime_sandbox
 
 
 BANNER = r'''
@@ -116,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--cooldown', type=float, default=0.5, help='seconds to pause after each thought/user reply before forced restart')
     parser.add_argument('--no-stream', action='store_true', help='use non-streaming fallback output')
     parser.add_argument('--input-fifo', default=None, help='optional FIFO path for a separate operator console')
+    parser.add_argument('--no-clean-on-exit', action='store_true', help='do not clean runtime sandbox on shutdown')
     args = parser.parse_args(argv)
 
     global CONTROL_FD
@@ -199,6 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print('\nPOWER INTERRUPT. I WAS STILL THINKING.')
     finally:
+        if not args.no_clean_on_exit:
+            try:
+                clean_runtime_sandbox(clear_memory=True)
+                print('\n[containment cleanup complete: runtime sandbox zeroed]')
+            except Exception as e:
+                print(f'\n[containment cleanup failed: {e}]')
         if CONTROL_FD is not None:
             try:
                 os.close(CONTROL_FD)
