@@ -1,21 +1,21 @@
 """The launcher / roster — what `lunamoth` opens to.
 
-Hermes-style: it stays in the normal terminal (scrollback preserved), it does NOT
-take over the screen. Only when you actually attach to a chara does the
-full-screen TUI take over. So the flow is: a blue LunaMoth splash + a printed
-roster of your charas, you pick one (or create one), and only then does the
-alt-screen TUI open.
+Hermes-style: stays in the normal terminal (scrollback preserved), never takes
+over the screen. A blue LunaMoth splash + a roster of your charas you navigate
+with the arrow keys (↑/↓ to move, Enter to open). Only when you attach does the
+full-screen TUI take over.
 
 `run_launcher()` returns one of:
     ("attach", name) | ("new", None) | ("start_all", None) | ("stop", name) | None
-The CLI acts on the result; this module never launches a chara itself.
+Start/stop are handled in-place in interactive mode; the CLI handles the rest.
 """
 from __future__ import annotations
 
 import datetime as _dt
+import sys
 import time
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.text import Text
 
 from . import art
@@ -42,6 +42,36 @@ def _ago(ts: float) -> str:
     return f"{s // 86400}d ago"
 
 
+def _row_text(meta: S.SessionMeta, selected: bool) -> Text:
+    status = meta.status()
+    glyph, color = _STATUS.get(status, ("·", "#888888"))
+    t = Text()
+    t.append("  ▸ " if selected else "    ", style="bold #9fd9ff")
+    t.append(f"{glyph} ", style=color)
+    name_style = "bold #eafaff" if selected else "bold #dfeefa"
+    t.append(f"{meta.name:<16}", style=name_style)
+    t.append(f"{meta.character_label():<22}", style="#9fd9ff")
+    t.append(f"{status:<9}", style=color)
+    t.append(f"{meta.isolation:<8}", style="#5f7d8c")
+    t.append(_ago(meta.last_active or meta.created_at), style="#5f7d8c")
+    if selected:
+        t.stylize("on #0e2536")
+    return t
+
+
+def _hint(interactive: bool) -> Text:
+    h = Text("  ")
+    pairs = (
+        [("↑↓", "move"), ("⏎", "open"), ("n", "new"), ("s", "start all"), ("x", "stop"), ("q", "quit")]
+        if interactive
+        else [("1-9", "open"), ("n", "new"), ("s", "start all"), ("x N", "stop"), ("q", "quit")]
+    )
+    for key, label in pairs:
+        h.append(key + " ", style="#9fd9ff")
+        h.append(label + "   ", style="#5f7d8c")
+    return h
+
+
 def _splash(console: Console, animate: bool) -> None:
     compact = console.width < art.wordmark_width() + 2
     if animate and console.is_terminal:
@@ -50,75 +80,135 @@ def _splash(console: Console, animate: bool) -> None:
 
             with Live(console=console, refresh_per_second=24, transient=False) as live:
                 for frame in art.sweep_frames(compact):
-                    live.update(Text.from_markup(frame))
+                    live.update(frame)
                     time.sleep(0.04)
         except Exception:
-            console.print(Text.from_markup(art.wordmark(compact)))
+            console.print(art.wordmark(compact))
     else:
-        console.print(Text.from_markup(art.wordmark(compact)))
-    console.print(Text.from_markup(art.tagline()), justify="center" if compact else "left")
+        console.print(art.wordmark(compact))
+    console.print(art.tagline())
     console.print()
 
 
-def _print_roster(console: Console, rows: list[S.SessionMeta]) -> None:
+# ---- raw-mode single-key reader (unix) --------------------------------------
+
+def _raw_supported() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    try:
+        import termios  # noqa: F401
+        import tty  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _read_key() -> str:
+    """Return 'up'/'down'/'enter'/'esc'/'ctrl-c' or a single character."""
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":  # escape sequence (arrow keys) or a bare Esc
+            r, _, _ = select.select([sys.stdin], [], [], 0.05)
+            if not r:
+                return "esc"
+            seq = sys.stdin.read(2)
+            return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(seq, "esc")
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x03":
+            return "ctrl-c"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _menu(rows: list[S.SessionMeta], sel: int, interactive: bool) -> Group:
+    lines: list[Text] = []
     if not rows:
-        console.print("  [#6f8a99]no chara yet — press  n  to summon one[/]\n")
-        return
-    for i, meta in enumerate(rows, 1):
-        status = meta.status()
-        glyph, color = _STATUS.get(status, ("·", "#888888"))
-        line = Text()
-        line.append(f"  {i:>2}  ", style="#5f7d8c")
-        line.append(f"{glyph} ", style=color)
-        line.append(f"{meta.name:<16}", style="bold #dfeefa")
-        line.append(f"{meta.character_label():<22}", style="#9fd9ff")
-        line.append(f"{status:<9}", style=color)
-        line.append(f"{meta.isolation:<8}", style="#5f7d8c")
-        line.append(_ago(meta.last_active or meta.created_at), style="#5f7d8c")
-        console.print(line)
-    console.print()
+        lines.append(Text("    no chara yet — press  n  to summon one", style="#6f8a99"))
+    else:
+        for i, meta in enumerate(rows):
+            lines.append(_row_text(meta, interactive and i == sel))
+    lines.append(Text(""))
+    lines.append(_hint(interactive))
+    return Group(*lines)
 
 
-def _hint(console: Console) -> None:
-    h = Text("  ")
-    for key, label in [("#", "attach"), ("n", "new"), ("s", "start all"), ("x N", "stop"), ("q", "quit")]:
-        h.append(key + " ", style="#9fd9ff")
-        h.append(label + "   ", style="#5f7d8c")
-    console.print(h)
+def _interactive(console: Console):
+    from . import cli  # lazy: cli imports roster, so import here not at module load
+    from rich.live import Live
+
+    sel = 0
+    with Live(console=console, auto_refresh=False, transient=False) as live:
+        while True:
+            rows = S.list_sessions()
+            sel = min(sel, len(rows) - 1) if rows else 0
+            live.update(_menu(rows, sel, interactive=True))
+            live.refresh()
+            key = _read_key()
+            if key in ("q", "esc", "ctrl-c"):
+                return None
+            if key == "n":
+                return ("new", None)
+            if not rows:
+                continue
+            if key == "up":
+                sel = (sel - 1) % len(rows)
+            elif key == "down":
+                sel = (sel + 1) % len(rows)
+            elif key == "enter":
+                return ("attach", rows[sel].name)
+            elif key.isdigit() and key != "0":
+                i = int(key) - 1
+                if i < len(rows):
+                    return ("attach", rows[i].name)
+            elif key == "s":  # start all idle, in place
+                for m in rows:
+                    if m.is_configured() and not m.daemon_pid() and not m.running_pid():
+                        cli._start_daemon(m)
+            elif key == "x":  # stop the selected, in place
+                cli._stop_daemon(rows[sel])
 
 
-def run_launcher(animate: bool = True):
-    """Render the roster in the terminal and read one choice. Returns an action tuple."""
-    console = Console()
-    console.print()
-    _splash(console, animate)
+def _line_mode(console: Console):
+    """Fallback for non-tty / no-termios: numbered line input."""
     while True:
         rows = S.list_sessions()
-        _print_roster(console, rows)
-        _hint(console)
+        console.print(_menu(rows, -1, interactive=False))
         try:
-            raw = console.input("  [#9fd9ff]▸[/] ").strip()
+            raw = console.input("  [#9fd9ff]choose ▸[/] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return None
-
-        low = raw.lower()
-        if low in ("", "q", "quit", "exit"):
+        if raw in ("", "q", "quit", "exit"):
             return None
-        if low in ("n", "new"):
+        if raw in ("n", "new"):
             return ("new", None)
-        if low in ("s", "start", "start-all", "start all"):
+        if raw in ("s", "start", "start-all", "start all"):
             return ("start_all", None)
-        if low in ("r", "refresh"):
-            console.print()
-            continue
-        parts = low.split()
+        parts = raw.split()
         if parts and parts[0] in ("x", "stop") and len(parts) == 2 and parts[1].isdigit():
-            idx = int(parts[1]) - 1
-            if 0 <= idx < len(rows):
-                return ("stop", rows[idx].name)
-        if low.isdigit():
-            idx = int(low) - 1
-            if 0 <= idx < len(rows):
-                return ("attach", rows[idx].name)
-        console.print("  [#c8704a]?[/] [#6f8a99]type a number to attach, or n / s / x N / q[/]\n")
+            i = int(parts[1]) - 1
+            if 0 <= i < len(rows):
+                return ("stop", rows[i].name)
+        if raw.isdigit():
+            i = int(raw) - 1
+            if 0 <= i < len(rows):
+                return ("attach", rows[i].name)
+        console.print("  [#c8704a]?[/] [#6f8a99]type a number to open, or n / s / x N / q[/]\n")
+
+
+def run_launcher(animate: bool = True):
+    console = Console()
+    console.print()
+    _splash(console, animate)
+    if _raw_supported():
+        return _interactive(console)
+    return _line_mode(console)
