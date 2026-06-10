@@ -4,13 +4,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .settings import Settings
 
 import json as _json
 
 from .audit import AuditLog
 from .cards import CharacterCard
-from .config import LLMConfig, ROOT, SANDBOX_ROOT, ThoughtConfig
+from .config import ROOT, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
 from .llm import LLMClient
 from .memory import MemoryLimits, MemoryStore
@@ -45,11 +48,6 @@ class Session:
     ))
     thoughts: list[str] = field(default_factory=list)
     ticks: int = 0
-
-    @property
-    def history(self) -> list[tuple[str, str]]:
-        # Backward-compatible view for UI/tests.
-        return self.context.render()
 
 
 class LunaMothAgent:
@@ -205,9 +203,9 @@ class LunaMothAgent:
         session.context.max_tokens = ctx
         session.context.trim_buffer_tokens = min(100_000, max(4096, ctx // 8))
         # Durable conversation: restore the current transcript epoch, then persist
-        # every new line back — the conversation survives restarts and handoffs.
+        # every new message back — the conversation survives restarts and handoffs.
         session.context.restore(self.transcript.load())
-        session.context.persist = self.transcript.append
+        session.context.persist = self.transcript.append_message
         return session
 
     def char_name(self) -> str:
@@ -242,13 +240,29 @@ class LunaMothAgent:
         """
         self.audit.write("presence_event", kind="attach", text=event_text[:300])
         status = self.state.load()
-        chunks: list[str] = []
-        for chunk in self._reply_stream(event_text, self.memory.render(), status, session.context.render()):
-            chunks.append(chunk)
-            yield chunk
-        reply = "".join(chunks).strip()
+        # Commit the event line BEFORE streaming (interrupt-safe).
         session.context.add("system", event_text)
-        session.context.add("assistant", reply)
+        agent_loop = self._agent_loop_active()
+        chunks: list[str] = []
+        committed = False
+        try:
+            stream = self._reply_stream(
+                event_text, self.memory.render(), status, session.context.render(),
+                in_context=True, record=session.context.add_message,
+            )
+            for chunk in stream:
+                chunks.append(chunk)
+                yield chunk
+            committed = True
+            if not agent_loop:
+                reply = "".join(chunks).strip()
+                if reply:
+                    session.context.add("assistant", reply)
+        finally:
+            if not committed and not agent_loop:
+                partial = "".join(chunks).strip()
+                if partial:
+                    session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
 
     def note_detach(self, session: Session) -> None:
         """Record the operator leaving: context line, audit, and a handoff event
@@ -315,13 +329,22 @@ class LunaMothAgent:
         return msgs
 
 
-    def _reply_stream(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]):
+    def _agent_loop_active(self) -> bool:
+        """True when turns run through the tool-calling loop (which commits its
+        own messages via `record`); False = plain stream, the caller commits."""
+        return self._tools_active() and self.llm.is_live()
+
+    def _reply_stream(
+        self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
+        *, in_context: bool = True, record=None,
+    ):
         """Pick the tool-enabled agent loop or a plain stream depending on pack/backend."""
-        if self._tools_active() and self.llm.is_live():
+        if self._agent_loop_active():
             return self.llm.stream_agent(
-                user_text, memory, status, context, self.tools.schemas(), self._execute_tool
+                user_text, memory, status, context, self.tools.schemas(), self._execute_tool,
+                record=record, in_context=in_context,
             )
-        return self.llm.stream_complete(user_text, memory, status, context)
+        return self.llm.stream_complete(user_text, memory, status, context, in_context=in_context)
 
     def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, str]:
         """Run one native tool call; return a compact display line + the result fed back to the model."""
@@ -341,13 +364,15 @@ class LunaMothAgent:
             head = f"⚙ {name} ✓ ({len(text)} chars)" if name == "terminal" else f"⚙ {name} ✓"
             snippet = _abbrev(text, 200)
             display = f"{head}\n  {snippet}" if snippet else head
-            content = text[:4000] or "(empty)"
+            content = text[:6000] or "(empty)"
+            if len(text) > 6000:
+                # Truncation must be EXPLICIT — silent cuts read as complete output
+                # and send the model down wrong paths (hermes does the same).
+                content += f"\n[output truncated — {len(text)} chars total; read the rest in pieces if needed]"
         else:
             err = str(result.get("error", ""))
             display = f"⚙ {name} ✗ {_abbrev(err, 160)}"
             content = f"ERROR: {err}"
-        # Transcript forensics (not yet reloaded into context — see roadmap).
-        self.transcript.append_tool(name, args, content)
         return {"display": display, "content": content}
 
     def stream_handle(self, text: str, session: Session):
@@ -361,13 +386,32 @@ class LunaMothAgent:
             return
         status = self.state.load()
         memory_text = self.memory.render()
-        chunks: list[str] = []
-        for chunk in self._reply_stream(text, memory_text, status, session.context.render()):
-            chunks.append(chunk)
-            yield chunk
-        reply = "".join(chunks).strip()
+        # Commit the operator's message BEFORE streaming: an interrupted reply
+        # must never lose the instruction that caused it.
         session.context.add("user", text)
-        session.context.add("assistant", reply)
+        agent_loop = self._agent_loop_active()
+        chunks: list[str] = []
+        committed = False
+        try:
+            stream = self._reply_stream(
+                text, memory_text, status, session.context.render(),
+                in_context=True, record=session.context.add_message,
+            )
+            for chunk in stream:
+                chunks.append(chunk)
+                yield chunk
+            committed = True
+            if not agent_loop:
+                reply = "".join(chunks).strip()
+                if reply:
+                    session.context.add("assistant", reply)
+        finally:
+            # Operator interrupt (the UI abandoned this generator): in the plain
+            # path WE must keep the partial; the agent loop keeps its own.
+            if not committed and not agent_loop:
+                partial = "".join(chunks).strip()
+                if partial:
+                    session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
 
     def _think_prompt(self, cycle: int) -> str:
         # Internal cycles are monologue. The model still has tools available and may
@@ -380,27 +424,63 @@ class LunaMothAgent:
             "可以包含氛围描写。这是独白，不是行动——除非真有必要，否则不要调用工具。"
         )
 
+    def _record_think(self, session: Session):
+        """record() wrapper for idle cycles: monologue text is tagged kind='think'
+        (so old cycles age out of the API view — see ContextBuffer.render), while
+        tool calls/results the chara makes stay untagged: real actions are worth
+        remembering at full strength."""
+
+        def record(msg: dict) -> None:
+            if msg.get("role") == "assistant" and not msg.get("tool_calls") and msg.get("content"):
+                msg = {**msg, "content": f"[internal cycle]\n{msg['content']}", "kind": "think"}
+            session.context.add_message(msg)
+
+        return record
+
     def stream_think(self, session: Session):
         session.ticks += 1
         status = self.state.load()
         cycle = session.ticks
+        agent_loop = self._agent_loop_active()
         chunks: list[str] = []
-        if self.thought_cfg.use_llm:
-            prompt = self._think_prompt(cycle)
-            try:
-                for chunk in self._reply_stream(prompt, self.memory.render(), status, session.context.render()):
-                    chunks.append(chunk)
-                    yield chunk
-            except Exception as e:
-                self.audit.write("llm_thought_error", error=str(e)[:500])
-        thought = "".join(chunks).strip()
-        if not thought:
-            thought = self._fallback_thought(cycle, status)
-            yield thought
-        session.thoughts.append(thought)
-        session.thoughts[:] = session.thoughts[-self.thought_cfg.max_session_thoughts:]
-        session.context.add("assistant", f"[internal cycle]\n{thought}")
-        self.audit.write("internal_cycle", tick=cycle, text=thought[:1000], ts=datetime.now(timezone.utc).isoformat())
+        committed = False
+
+        def commit(interrupted: bool) -> None:
+            nonlocal committed
+            if committed:
+                return
+            committed = True
+            thought = "".join(chunks).strip()
+            if thought:
+                session.thoughts.append(thought)
+                session.thoughts[:] = session.thoughts[-self.thought_cfg.max_session_thoughts:]
+                if not agent_loop:
+                    mark = self.llm.INTERRUPT_MARK if interrupted else ""
+                    session.context.add("assistant", f"[internal cycle]\n{thought}{mark}", kind="think")
+            self.audit.write("internal_cycle", tick=cycle, text=thought[:1000], ts=datetime.now(timezone.utc).isoformat())
+
+        try:
+            if self.thought_cfg.use_llm:
+                prompt = self._think_prompt(cycle)
+                try:
+                    # The think prompt itself is EPHEMERAL (in_context=False): it
+                    # never enters the durable context, only the monologue does.
+                    stream = self._reply_stream(
+                        prompt, self.memory.render(), status, session.context.render(),
+                        in_context=False, record=self._record_think(session),
+                    )
+                    for chunk in stream:
+                        chunks.append(chunk)
+                        yield chunk
+                except Exception as e:
+                    self.audit.write("llm_thought_error", error=str(e)[:500])
+            if not "".join(chunks).strip():
+                fallback = self._fallback_thought(cycle, status)
+                chunks.append(fallback)
+                yield fallback
+            commit(False)
+        finally:
+            commit(True)  # no-op unless the generator was abandoned mid-stream
 
     def handle(self, text: str, session: Session) -> str:
         # Non-streaming convenience (used by tests): drive the streaming path.

@@ -46,9 +46,7 @@ Each unchecked item below is scoped to be independently completable — it lists
 
 - [x] **Transcript persistence** — every context line (and tool call) lands in a per-chara SQLite transcript (WAL, adapted from hermes-agent) as it happens; attach restores the conversation and shows the tail, daemons adopt it on handoff, `/reset` starts a new epoch (old history stays on disk)
 
-**Durability**
-
-- [ ] **Tool-call retention in context** — tool calls are already recorded in the transcript (kind='tool') but live only inside one `stream_agent` call; feed them back into the durable context so the model remembers what it ran last turn. *Touches: `agent.py`, `llm.py`, `context.py`, `transcript.py`.*
+- [x] **Hermes-grade context management** — full message dicts in the durable history (assistant tool calls, tool results and reasoning survive restarts, so the chara remembers what it ran); interrupts commit the partial turn and never lose your instruction; output-limit truncation gets explicit continue/split-it prompts instead of silent cuts; old idle monologues age out of the API view so self-talk can't bury your last instruction
 
 **Robustness**
 

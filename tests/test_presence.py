@@ -51,7 +51,7 @@ def test_detach_queues_handoff_and_logs(agent):
     a = agent(toolpack="sandbox")
     session = a.make_session()
     a.note_detach(session)
-    assert any(role == "system" for role, _ in session.context.render())
+    assert any(role == "system" for role, _ in session.context.pairs())
     assert a.presence.pop_event() != ""
 
 

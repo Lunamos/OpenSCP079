@@ -28,7 +28,7 @@ SLASH_COMMANDS = [
 ]
 
 from . import art
-from .agent import LunaMothAgent, Session
+from .agent import LunaMothAgent
 from .cleanup import clean_runtime_sandbox
 from .config import ROOT
 from .llm import LLMClient
@@ -311,7 +311,7 @@ class WelcomeScreen(Screen):
         them if you want" rather than a hard binding. Empty path = bundled default.
         """
         from .cards import CharacterCard
-        from .persona import default_character_path, default_world_path, system_language
+        from .persona import default_character_path, default_world_path
 
         path = char_path or (str(default_character_path() or ""))
         if not path:
@@ -644,10 +644,20 @@ class LunaMothTUI(App):
         rows = self.session.context.messages
         if not rows:
             return
-        tail = rows[-max_lines:]
-        if len(rows) > len(tail):
-            self._append_display(f"··· {len(rows) - len(tail)} earlier messages (restored) ···\n\n")
-        for role, content in tail:
+        # Tool plumbing is noise in a recap — show prose plus a compact tool mark.
+        visible = [m for m in rows if not m.get("tool_call_id")]
+        tail = visible[-max_lines:]
+        if len(visible) > len(tail):
+            self._append_display(f"··· {len(visible) - len(tail)} earlier messages (restored) ···\n\n")
+        for msg in tail:
+            role = msg.get("role", "")
+            content = str(msg.get("content") or "")
+            if msg.get("tool_calls"):
+                names = ", ".join(tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"])
+                self._append_display(f"⚙ ({names})\n\n" if not content else f"{self.skin.reply_pfx(name)}{content}\n⚙ ({names})\n\n")
+                continue
+            if not content:
+                continue
             if role == "user":
                 pfx = self.skin.operator_pfx(self.settings.user_name)
             elif role == "system":

@@ -114,6 +114,12 @@ class TranscriptStore:
             return new
 
     # ---- messages -------------------------------------------------------------------
+    # Row kinds:
+    #   chat    plain prose line; content is the text
+    #   think   idle self-talk monologue; content is the text
+    #   struct  full message dict serialized as JSON in content (assistant
+    #           tool_calls, tool results, reasoning_content — hermes-style)
+    #   tool    legacy forensic rows from older builds; never reloaded
 
     def append(self, role: str, content: str, kind: str = "chat") -> None:
         if not self.available or not content:
@@ -127,33 +133,50 @@ class TranscriptStore:
         except (sqlite3.Error, OSError):
             pass  # best-effort: never kill the host loop over a transcript write
 
-    def append_tool(self, name: str, args: dict, result: str) -> None:
-        """Record a tool call for forensics (not reloaded into context yet)."""
-        try:
-            payload = json.dumps({"tool": name, "args": args, "result": result[:2000]}, ensure_ascii=False)
-        except (TypeError, ValueError):
-            payload = json.dumps({"tool": name, "result": str(result)[:2000]}, ensure_ascii=False)
-        self.append("tool", payload, kind="tool")
+    def append_message(self, msg: dict) -> None:
+        """Persist one context message dict (the ContextBuffer persist hook)."""
+        role = str(msg.get("role", ""))
+        structured = any(k in msg for k in ("tool_calls", "tool_call_id", "reasoning_content", "name"))
+        if structured:
+            try:
+                self.append(role, json.dumps(msg, ensure_ascii=False), kind="struct")
+            except (TypeError, ValueError):
+                self.append(role, str(msg.get("content") or ""), kind="chat")
+            return
+        kind = "think" if msg.get("kind") == "think" else "chat"
+        self.append(role, str(msg.get("content") or ""), kind=kind)
 
-    def load(self, max_messages: int = 0) -> list[tuple[str, str]]:
-        """Conversation rows of the current epoch, oldest first.
-
-        Only kind='chat' rows return — tool rows are recorded but not yet fed
-        back into the context window."""
+    def load(self, max_messages: int = 0) -> list[dict]:
+        """Conversation messages of the current epoch, oldest first, as dicts."""
         if not self.available:
             return []
         try:
             with self._connect() as conn:
                 sql = (
-                    "SELECT role, content FROM messages "
-                    "WHERE epoch=? AND kind='chat' ORDER BY id"
+                    "SELECT role, content, kind FROM messages "
+                    "WHERE epoch=? AND kind IN ('chat','think','struct') ORDER BY id"
                 )
                 rows = conn.execute(sql, (self.epoch(),)).fetchall()
         except (sqlite3.Error, OSError):
             return []
         if max_messages > 0:
             rows = rows[-max_messages:]
-        return [(str(r), str(c)) for r, c in rows]
+        out: list[dict] = []
+        for role, content, kind in rows:
+            if kind == "struct":
+                try:
+                    msg = json.loads(content)
+                    if isinstance(msg, dict) and msg.get("role"):
+                        out.append(msg)
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                out.append({"role": str(role), "content": str(content)})
+            elif kind == "think":
+                out.append({"role": str(role), "content": str(content), "kind": "think"})
+            else:
+                out.append({"role": str(role), "content": str(content)})
+        return out
 
     def count(self) -> int:
         if not self.available:
@@ -161,7 +184,8 @@ class TranscriptStore:
         try:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE epoch=? AND kind='chat'", (self.epoch(),)
+                    "SELECT COUNT(*) FROM messages WHERE epoch=? AND kind IN ('chat','think','struct')",
+                    (self.epoch(),),
                 ).fetchone()
             return int(row[0]) if row else 0
         except (sqlite3.Error, OSError):

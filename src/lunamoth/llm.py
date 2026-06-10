@@ -21,34 +21,47 @@ class LLMClient:
     def is_live(self) -> bool:
         return self.cfg.provider in LIVE_PROVIDERS and bool(self.cfg.base_url)
 
-    def complete(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]) -> str:
+    def stream_complete(
+        self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
+        in_context: bool = True,
+    ) -> Iterator[str]:
         if self.is_live():
-            return "".join(self.stream_complete(user_text, memory, status, context)).strip()
-        return self._mock(user_text, memory, status)
-
-    def stream_complete(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]) -> Iterator[str]:
-        if self.is_live():
-            yield from self._openai_compatible_stream(user_text, memory, status, context)
+            yield from self._openai_compatible_stream(user_text, memory, status, context, in_context)
             return
         # Fake streaming for mock mode.
         text = self._mock(user_text, memory, status)
         for ch in text:
             yield ch
 
-    def _messages(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]) -> list[dict[str, str]]:
+    def _messages(
+        self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
+        in_context: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Build the chat-completions message list.
+
+        `context` is ContextBuffer.render() output: full message dicts including
+        assistant tool_calls and tool results, already sanitized for the API.
+        When `in_context` is True the caller has ALREADY committed user_text to
+        the context (interrupt-safety: commit before streaming), so it is not
+        appended again; ephemeral prompts (idle think cycles) pass False.
+        """
         if self.system_provider is not None:
-            scan_text = "\n".join(content for _, content in context) + "\n" + user_text
-            messages = [{"role": "system", "content": m} for m in self.system_provider(scan_text) if m and m.strip()]
+            scan_text = "\n".join(str(m.get("content") or "") for m in context) + "\n" + user_text
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": m} for m in self.system_provider(scan_text) if m and m.strip()
+            ]
         else:
             # Only hit when no system_provider is wired (bare client). Keep it neutral.
             messages = [{"role": "system", "content": fallback_persona()}]
             if memory.strip():
                 messages.append({"role": "system", "content": f"Your saved memory:\n{memory}"})
-        for role, content in context:
-            if role not in {"user", "assistant", "system"}:
-                role = "system"
-            messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": user_text})
+        for msg in context:
+            role = msg.get("role")
+            if role not in {"user", "assistant", "system", "tool"}:
+                msg = {**msg, "role": "system"}
+            messages.append(msg)
+        if not in_context:
+            messages.append({"role": "user", "content": user_text})
         return messages
 
     def _headers(self) -> dict[str, str]:
@@ -95,12 +108,15 @@ class LLMClient:
         except Exception as e:  # noqa: BLE001 - surface anything to the operator
             return False, f"error: {e}"
 
-    def _openai_compatible_stream(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]) -> Iterator[str]:
+    def _openai_compatible_stream(
+        self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
+        in_context: bool = True,
+    ) -> Iterator[str]:
         headers = self._headers()
         url = f"{self.cfg.base_url}/chat/completions"
         body = {
             "model": self.cfg.model,
-            "messages": self._messages(user_text, memory, status, context),
+            "messages": self._messages(user_text, memory, status, context, in_context),
             "temperature": self.cfg.temperature,
             "max_tokens": self.cfg.max_tokens,
             "stream": True,
@@ -132,32 +148,111 @@ class LLMClient:
 
     # ---- native function-calling agent loop ---------------------------------------
 
-    def stream_agent(self, user_text, memory, status, context, tools, execute, max_steps: int = 6):
+    # Continuation prompts, hermes-style: when the output limit cuts a response
+    # or a tool call, TELL the model instead of letting it flounder — the silent
+    # version is exactly the "started working, then mysteriously gave up" bug.
+    _CONTINUE_NOTE = (
+        "[System: your previous response was truncated by the output length limit. "
+        "Continue exactly where you left off. Do not restart or repeat prior text.]"
+    )
+    _SPLIT_TOOLS_NOTE = (
+        "[System: your tool call streamed past the output length limit and was DROPPED "
+        "before execution. Do not retry the same call with the same large content — "
+        "break the work into several smaller tool calls (e.g. write the file in pieces).]"
+    )
+    INTERRUPT_MARK = "\n[cut off mid-reply by the operator's next message]"
+
+    def stream_agent(
+        self, user_text, memory, status, context, tools, execute,
+        record=None, max_steps: int = 8, in_context: bool = True,
+    ):
         """Stream a reply that may call tools (modern OpenAI-style function calling).
 
-        Yields text chunks for the UI. When the model emits tool_calls, `execute(tc)`
-        runs the tool and returns {"display": <compact line>, "content": <result text>};
-        the result is fed back and the model continues until it produces a final answer.
+        Yields text chunks for the UI. `execute(tc)` runs one tool call and returns
+        {"display": ..., "content": ...}; results are fed back until the model
+        produces a final answer.
+
+        `record(msg)` commits each message (assistant incl. tool_calls and
+        reasoning_content, tool results, system continuation notes) to the DURABLE
+        context as soon as it exists — following hermes-agent's conversation
+        history. If the UI abandons this generator mid-stream (operator interrupt),
+        the partial turn is still committed, marked as cut off, so the model
+        remembers what it was doing.
         """
         if not self.is_live():
             for ch in self._mock(user_text, memory, status):
                 yield ch
             return
-        messages = self._messages(user_text, memory, status, context)
-        for _ in range(max_steps):
-            text_parts, tool_calls = yield from self._stream_turn(messages, tools)
-            if not tool_calls:
-                return
-            messages.append({"role": "assistant", "content": "".join(text_parts) or None, "tool_calls": tool_calls})
-            for tc in tool_calls:
-                res = execute(tc)
-                display = res.get("display")
-                if display:
-                    yield "\n" + display + "\n"
-                messages.append({"role": "tool", "tool_call_id": tc.get("id") or "", "content": res.get("content", "")})
+        record = record or (lambda _msg: None)
+        messages = self._messages(user_text, memory, status, context, in_context=in_context)
+        acc: list[str] = []  # text of the in-flight turn, readable by `finally`
+        finished = False
+        try:
+            for _ in range(max_steps):
+                acc.clear()
+                tool_calls, reasoning, finish = yield from self._stream_turn(messages, tools, acc)
+                text = "".join(acc).strip()
+                acc.clear()  # committed below — must not re-commit as "interrupted"
+                truncated = finish == "length"
 
-    def _stream_turn(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None):
-        """Stream one assistant turn. Yields content chunks; returns (text_parts, tool_calls)."""
+                if truncated and tool_calls:
+                    # Cut mid-arguments: the JSON is unusable. Drop the calls and
+                    # tell the model to split the work (hermes pattern).
+                    a_msg: dict[str, Any] = {"role": "assistant", "content": text or "(oversized tool call dropped)"}
+                    if reasoning:
+                        a_msg["reasoning_content"] = reasoning
+                    record(a_msg)
+                    messages.append({k: v for k, v in a_msg.items() if k != "reasoning_content"})
+                    note = {"role": "system", "content": self._SPLIT_TOOLS_NOTE}
+                    record(note)
+                    messages.append(note)
+                    yield "\n⚠ tool call truncated by the output limit — asking for smaller pieces\n"
+                    continue
+
+                a_msg = {"role": "assistant", "content": text or None}
+                if tool_calls:
+                    a_msg["tool_calls"] = tool_calls
+                if reasoning:
+                    # Kept for the record/transcript; ContextBuffer.render() strips
+                    # it from future API calls (most providers reject echoed thinking).
+                    a_msg["reasoning_content"] = reasoning
+                record(a_msg)
+                messages.append({k: v for k, v in a_msg.items() if k != "reasoning_content"})
+
+                if tool_calls:
+                    for tc in tool_calls:
+                        res = execute(tc)
+                        display = res.get("display")
+                        if display:
+                            yield "\n" + display + "\n"
+                        t_msg = {"role": "tool", "tool_call_id": tc.get("id") or "", "content": res.get("content", "")}
+                        record(t_msg)
+                        messages.append(t_msg)
+                    continue
+
+                if truncated:
+                    note = {"role": "system", "content": self._CONTINUE_NOTE}
+                    record(note)
+                    messages.append(note)
+                    yield "\n"
+                    continue
+
+                finished = True
+                return
+            finished = True  # step budget exhausted; everything so far is recorded
+        finally:
+            if not finished:
+                partial = "".join(acc).strip()
+                if partial:
+                    # Operator interrupt mid-stream: keep the partial turn so the
+                    # model remembers it was halfway through something.
+                    record({"role": "assistant", "content": partial + self.INTERRUPT_MARK})
+
+    def _stream_turn(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, text_out: list[str]):
+        """Stream one assistant turn. Yields content chunks; accumulates visible
+        text into `text_out` (caller-owned, so an abandoned generator can still
+        read the partial). Returns (tool_calls, reasoning, finish_reason).
+        """
         import urllib.error
         import urllib.request
 
@@ -173,8 +268,9 @@ class LLMClient:
             body["tool_choice"] = "auto"
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(f"{self.cfg.base_url}/chat/completions", data=data, headers=self._headers(), method="POST")
-        text_parts: list[str] = []
         acc: dict[int, dict[str, str]] = {}
+        reasoning_parts: list[str] = []
+        finish_reason = ""
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 for raw in resp:
@@ -189,10 +285,19 @@ class LLMClient:
                         payload = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    delta = payload.get("choices", [{}])[0].get("delta", {})
+                    choice = payload.get("choices", [{}])[0]
+                    if choice.get("finish_reason"):
+                        finish_reason = str(choice["finish_reason"])
+                    delta = choice.get("delta", {})
+                    # Reasoning-model thinking (DeepSeek-style `reasoning_content`,
+                    # OpenRouter's `reasoning`): captured for the record, not shown
+                    # as character speech and never replayed to the API.
+                    thinking = delta.get("reasoning_content") or delta.get("reasoning")
+                    if thinking:
+                        reasoning_parts.append(thinking)
                     chunk = delta.get("content")
                     if chunk:
-                        text_parts.append(chunk)
+                        text_out.append(chunk)
                         yield chunk
                     for tcd in delta.get("tool_calls") or []:
                         idx = tcd.get("index", 0)
@@ -215,7 +320,7 @@ class LLMClient:
                     "type": "function",
                     "function": {"name": s["name"], "arguments": s["args"] or "{}"},
                 })
-        return text_parts, tool_calls
+        return tool_calls, "".join(reasoning_parts), finish_reason
 
     def _mock(self, user_text: str, memory: str, status: dict[str, Any]) -> str:
         # Persona-neutral offline engine: keeps the app usable without an API. Real

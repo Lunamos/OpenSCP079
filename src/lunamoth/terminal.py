@@ -129,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         # continues *knowing* the operator left (permission requests auto-deny).
         # The line is usually already in the restored transcript — don't duplicate.
         handoff = agent.presence.pop_event()
-        if handoff and ("system", handoff) not in session.context.messages[-3:]:
+        recent = session.context.messages[-3:]
+        if handoff and not any(m.get("role") == "system" and m.get("content") == handoff for m in recent):
             session.context.add("system", handoff)
         print(BANNER)
     else:
