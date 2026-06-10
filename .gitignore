@@ -82,20 +82,23 @@ dmypy.json
 docs/_build/
 .streamlit/secrets.toml
 
-# Open SCP 079 runtime config (holds API keys — never commit)
+# LunaMoss runtime config (holds API keys — never commit)
+.lunamoss/
 .scp079/
 
-# User-dropped SillyTavern cards / world books (keep the shipped SCP assets + .gitkeep)
+# User-dropped SillyTavern cards / world books (keep bundled assets, licenses + .gitkeep)
 characters/*
 worlds/*
 !characters/.gitkeep
+!characters/LICENSE-CC-BY-SA-3.0.md
 !worlds/.gitkeep
+!worlds/LICENSE-CC-BY-SA-3.0.md
 !characters/SCP-079.zh.json
 !characters/SCP-079.en.json
 !worlds/SCP-Foundation.zh.json
 !worlds/SCP-Foundation.en.json
 
-# Open SCP 079 runtime artifacts
+# LunaMoss runtime artifacts
 sandbox/logs/*.jsonl
 sandbox/control/*
 sandbox/workspace/*

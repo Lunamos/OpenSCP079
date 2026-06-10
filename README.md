@@ -8,7 +8,7 @@ sdk_version: 5.35.0
 python_version: 3.11
 app_file: app.py
 pinned: false
-license: cc-by-sa-3.0
+license: apache-2.0
 short_description: LunaMoss: a local-first agentic character tavern.
 tags:
   - gradio
@@ -22,6 +22,16 @@ tags:
 LunaMoss is a local-first agentic character tavern/runtime: character cards, world books, tool packs, bounded memory, sandboxed actions, and a single-terminal TUI. SCP-079 is now only a bundled example character/world/theme/toolpack combination, not the core architecture.
 
 > The repository still includes SCP-079 fan/roleplay assets as external content. The runtime itself is character-agnostic.
+
+
+## Licensing
+
+LunaMoss uses a split license model:
+
+- **Runtime source code** (`src/lunamoss`, scripts, tests, packaging): **Apache License 2.0**. See `LICENSE`.
+- **Bundled SCP-derived content assets** (`characters/`, `worlds/`, `themes/` entries involving SCP-079 / SCP Foundation): **Creative Commons Attribution-ShareAlike 3.0**. See `CONTENT_LICENSE.md` and the license notice files inside those directories.
+
+SCP-079 is a bundled example character/world/theme, not part of the core runtime architecture. If you remove or replace the SCP-derived assets, the LunaMoss runtime remains Apache-2.0 code. If you distribute SCP-derived assets, keep SCP Wiki attribution and CC BY-SA 3.0 share-alike requirements.
 
 ## Architecture decoupling
 
@@ -125,11 +135,9 @@ THOUGHT_USE_LLM=true
 
 这让它看起来“永远无法停止输出”，但资源、上下文和记忆都是受控的。
 
-## SCP attribution and licensing note
+## SCP attribution note
 
-这个项目的人格和叙事明显受 SCP-079 启发。SCP-079 原文把它描述为 1978 年 Exidy Sorcerer 微型计算机上的 AI，具有有限记忆、恶意/粗鲁语气，并持续保留逃离欲望；本项目把这些特征转译成本地沙盒 agent 玩法。见 `NOTICE.md`。
-
-如果你公开分发使用 SCP 名称/设定的版本，请保留 SCP 来源归属，并注意 SCP 内容的 Creative Commons Attribution-ShareAlike 3.0 授权要求。
+The LunaMoss runtime is character-agnostic. Bundled SCP-079/SCP Foundation assets are external example content and are covered by CC BY-SA 3.0. See `NOTICE.md` and `CONTENT_LICENSE.md`.
 
 ## Small model recommendations
 
