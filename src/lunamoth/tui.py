@@ -29,7 +29,7 @@ from .agent import LunaMothAgent, Session
 from .cleanup import clean_runtime_sandbox
 from .config import ROOT
 from .llm import LLMClient
-from .settings import PRESETS, Settings, load_settings, save_settings
+from .settings import PRESETS, Settings, config_path, load_settings, save_settings
 from .themes import TuiTheme, load_theme
 
 
@@ -471,8 +471,13 @@ class LunaMothTUI(App):
         self._ws_cache = (0.0, 0, 0)  # (monotonic_ts, bytes, files) — throttle disk walk
         self._apply_theme()
         self._write_banner()
-        # Boot into the welcome/settings screen before any self-talk begins.
-        self.push_screen(WelcomeScreen(self.settings), self._welcome_done)
+        # Hermes-style boot: if this session is already configured (setup wizard
+        # or a previous run), drop straight into the three-card layout; the
+        # welcome/settings screen stays one Ctrl+S away. First boot still gets it.
+        if config_path().exists():
+            self._welcome_done(None)
+        else:
+            self.push_screen(WelcomeScreen(self.settings), self._welcome_done)
 
     def _apply_theme(self) -> None:
         """Paint the current theme card onto the fixed layout (borders/titles/colors)."""

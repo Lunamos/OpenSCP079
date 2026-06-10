@@ -14,6 +14,9 @@ dependencies = [
   "textual>=6.0,<7",
 ]
 
+[project.scripts]
+lunamoth = "lunamoth.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
@@ -22,3 +25,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]

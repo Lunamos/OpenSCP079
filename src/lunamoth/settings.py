@@ -40,7 +40,7 @@ class Settings:
     temperature: float = 0.85
     max_tokens: int = 420
     lang: str = "zh"
-    py_backend: str = "local"  # local | docker  (groundwork for stronger containment)
+    py_backend: str = "sandbox"  # local (dir-level) | sandbox (OS jail, default) | docker
     # SillyTavern-compatible persona. Empty character_path => built-in default persona.
     character_path: str = ""
     world_path: str = ""

@@ -33,11 +33,12 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 
 - [x] SillyTavern-compatible character cards & world books
 - [x] Composable tool packs with native tool calling
-- [x] Local & Docker sandbox backends, bounded auditable memory
-- [x] Single-terminal split TUI with themes and hot-swappable settings
-- [ ] **Persistent server sessions** — keep a character running on a server, detached from your terminal (Hermes-style backends)
-- [ ] **Remote TUI** — attach to a running session from another machine, cc-switch-style (high priority)
-- [ ] **Isolation selector** — choose none / simple sandbox / Docker per session at launch
+- [x] Bounded auditable memory, single-terminal split TUI with themes
+- [x] **One-line installer & `lunamoth` CLI** — `curl | bash`, setup wizard, self-update
+- [x] **Named sessions** — `lunamoth new/ls/attach/rm`, each with its own config & sandbox
+- [x] **Isolation selector** — `dir` / `sandbox` (OS jail: sandbox-exec / bubblewrap) / `docker` per session
+- [ ] **Persistent server sessions** — detached background sessions you can re-attach to (today: run inside tmux/screen)
+- [ ] **Remote TUI** — beyond the `ssh host -t lunamoth attach NAME` baseline: a gateway for public-IP/VPS access (high priority)
 - [ ] **Web UI** — remote browser access to running sessions (low priority)
 
 ## Features
@@ -54,22 +55,42 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 
 ## Quick start
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (falls back to `python3` if uv is absent).
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lunamos/LunaMoth/main/install.sh | bash
+lunamoth
+```
+
+The installer puts a checkout in `~/.lunamoth/app`, a managed [uv](https://docs.astral.sh/uv/) in `~/.lunamoth/bin`, and the `lunamoth` command in `~/.local/bin`. First run walks you through a short **setup wizard** (provider → key → model → test), then drops you into the TUI. `lunamoth update` upgrades in place; `lunamoth doctor` checks your environment.
+
+Provider presets: **OpenRouter / OpenAI / Ollama (local) / Mock (offline)** or any custom OpenAI-compatible endpoint. Press **Ctrl+S** in the TUI anytime to hot-swap the backend, character, world, or theme.
+
+<details>
+<summary>Developing from a clone</summary>
 
 ```bash
 git clone https://github.com/Lunamos/LunaMoth.git && cd LunaMoth
 uv sync
-./run.sh
+uv run lunamoth        # same CLI, editable code
+./run.sh               # or: launch the TUI directly without sessions
 ```
 
-The first launch opens a **welcome screen** where you configure everything in-TUI — no env files needed:
+</details>
 
-1. Pick a provider preset: **OpenRouter / OpenAI / Ollama (local) / Mock (offline)**, or a custom OpenAI-compatible endpoint.
-2. Fill in `base_url` / `api_key` / `model`, hit **Test connection**.
-3. Pick a character card and world book (or keep the default — see [Content](#content)).
-4. Enter. Press **Ctrl+S** anytime to reopen settings and hot-swap the backend.
+## Sessions
 
-Config persists to `.lunamoth/config.json` (gitignored; it takes precedence over env vars).
+Every session is an independent character home — its own config, sandbox, memory, and isolation level — stored under `~/.lunamoth/sessions/`:
+
+```bash
+lunamoth                          # open the default "home" session
+lunamoth new muse --isolation docker
+lunamoth ls                       # NAME / ISOLATION / STATUS / LAST ACTIVE
+lunamoth attach muse
+lunamoth rm muse
+```
+
+Remote baseline: `ssh yourserver -t lunamoth attach muse` — sessions live on the server, your terminal is just a viewport. (A proper gateway for public-IP/VPS access is on the roadmap; session activation is already factored behind `SessionMeta.env()` for it.)
 
 ## Connecting a model
 
@@ -105,22 +126,24 @@ Imported cards are plain roleplay by default — tool access is opt-in via a too
 
 ## Isolation levels
 
-| Level | Boundary | Status |
-| --- | --- | --- |
-| None | Tools run with the host process (Hermes-style) | planned |
-| Local sandbox (default) | Subprocess + workspace path guard + module blocklist + resource limits (+ `sandbox-exec` on macOS) | ✅ |
-| Docker | `--network none`, read-only rootfs, memory/CPU/pid caps | ✅ `LUNAMOTH_PY_BACKEND=docker` |
+Pick per session with `lunamoth new NAME --isolation ...`:
 
-All file access is confined to `sandbox/`; there is no raw shell tool and no default network tool. On exit the runtime sandbox is cleaned (keep it with `--no-clean-on-exit`).
+| Level | Boundary |
+| --- | --- |
+| `dir` | Subprocess + workspace path guard + module blocklist + resource limits (Claude-Code-style directory trust) |
+| `sandbox` (default) | All of the above **plus an OS jail**: `sandbox-exec` on macOS / `bubblewrap` on Linux — network denied, writes confined to the workspace, no daemon, no root |
+| `docker` | Container: `--network none`, read-only rootfs, memory/CPU/pid caps — strongest, heaviest |
+
+All file access is confined to the session sandbox; there is no raw shell tool and no default network tool. On exit the runtime sandbox is cleaned (keep it with `--no-clean-on-exit`).
 
 ## TUI reference
 
 ```bash
-./run.sh                 # split TUI: display stream on top, operator console below
-./run.sh --forever       # enable the idle self-talk loop
-./run.sh --cooldown 4    # pause between self-talk cycles
-./run.sh --plain         # legacy plain terminal mode
-./run_web.sh             # experimental web UI
+lunamoth                  # three-card TUI: character stream / operator console / telemetry
+lunamoth --forever        # enable the idle self-talk loop
+lunamoth --cooldown 4     # pause between self-talk cycles
+lunamoth --plain          # legacy plain terminal mode
+./run_web.sh              # experimental web UI (from a clone)
 ```
 
 In-session: `/help`, `/status`, `/memory`, `/workspace`, `/wread <file>`, `/think on|off`, `/cooldown <s>`, `/exit`.

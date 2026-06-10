@@ -33,11 +33,12 @@
 
 - [x] 兼容 SillyTavern 的角色卡与世界书
 - [x] 可组合工具包 + 原生 tool calling
-- [x] 本地 / Docker 沙盒后端，有界可审计记忆
-- [x] 单终端分屏 TUI，支持主题与热切换设置
-- [ ] **服务器持久会话** —— 让角色在服务器上持续运行，与你的终端解耦（Hermes 式后端）
-- [ ] **远程 TUI** —— 从另一台机器 attach 到运行中的会话，cc-switch 式体验（高优先级）
-- [ ] **隔离等级选择** —— 启动时按会话选择 无隔离 / 简单沙盒 / Docker
+- [x] 有界可审计记忆，单终端分屏 TUI 与主题
+- [x] **一键安装与 `lunamoth` CLI** —— `curl | bash`、设置向导、自更新
+- [x] **多会话管理** —— `lunamoth new/ls/attach/rm`，每个会话独立配置与沙盒
+- [x] **隔离等级选择** —— 按会话选择 `dir` / `sandbox`（OS 级：sandbox-exec / bubblewrap）/ `docker`
+- [ ] **服务器持久会话** —— 可脱离终端后台运行、随时重连（目前可用 tmux/screen 替代）
+- [ ] **远程 TUI** —— 在 `ssh host -t lunamoth attach NAME` 保底方案之外，做公网 IP / VPS 的网关接入（高优先级）
 - [ ] **网页端** —— 浏览器远程访问运行中的会话（低优先级）
 
 ## 特性
@@ -54,22 +55,42 @@
 
 ## 快速开始
 
-需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)（没有 uv 时自动回退 `python3`）。
+macOS / Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lunamos/LunaMoth/main/install.sh | bash
+lunamoth
+```
+
+安装器会把代码 checkout 到 `~/.lunamoth/app`、托管一份 [uv](https://docs.astral.sh/uv/) 在 `~/.lunamoth/bin`、并把 `lunamoth` 命令装进 `~/.local/bin`。首次运行进入简短的**设置向导**（provider → key → model → 连接测试），随后直接进入 TUI。`lunamoth update` 原地升级；`lunamoth doctor` 检查环境。
+
+Provider 预设：**OpenRouter / OpenAI / Ollama（本地）/ Mock（离线）**，或任意自定义 OpenAI 兼容 endpoint。TUI 内随时按 **Ctrl+S** 热切换后端、角色、世界书或主题。
+
+<details>
+<summary>从源码开发</summary>
 
 ```bash
 git clone https://github.com/Lunamos/LunaMoth.git && cd LunaMoth
 uv sync
-./run.sh
+uv run lunamoth        # 同一个 CLI，代码可编辑
+./run.sh               # 或：跳过会话管理直接启动 TUI
 ```
 
-首次启动会进入**欢迎页**，所有配置都在 TUI 里完成，无需改环境变量：
+</details>
 
-1. 选 provider 预设：**OpenRouter / OpenAI / Ollama（本地）/ Mock（离线）**，或自定义 OpenAI 兼容 endpoint。
-2. 填 `base_url` / `api_key` / `model`，点 **Test connection** 验证。
-3. 选角色卡和世界书（或直接用默认角色，见[内容目录](#内容目录)）。
-4. 进入会话。随时按 **Ctrl+S** 重开设置页热切换后端。
+## 会话
 
-配置持久化到 `.lunamoth/config.json`（已 gitignore，优先级高于环境变量）。
+每个会话是一个独立的角色之家——独立配置、沙盒、记忆与隔离等级，存放在 `~/.lunamoth/sessions/` 下：
+
+```bash
+lunamoth                          # 打开默认 "home" 会话
+lunamoth new muse --isolation docker
+lunamoth ls                       # 名称 / 隔离 / 状态 / 最近活跃
+lunamoth attach muse
+lunamoth rm muse
+```
+
+远程保底方案：`ssh yourserver -t lunamoth attach muse` —— 会话生活在服务器上，你的终端只是取景框。（公网 IP / VPS 的网关接入在路线图上；会话激活已抽象在 `SessionMeta.env()` 后面，留好了接口。）
 
 ## 接入模型
 
@@ -105,22 +126,24 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 
 ## 隔离等级
 
-| 等级 | 边界 | 状态 |
-| --- | --- | --- |
-| 无隔离 | 工具直接在宿主进程环境运行（Hermes 式） | 规划中 |
-| 本地沙盒（默认） | 子进程 + workspace 路径守卫 + 模块黑名单 + 资源限制（macOS 上叠加 `sandbox-exec`） | ✅ |
-| Docker | `--network none`、只读根文件系统、内存/CPU/PID 上限 | ✅ `LUNAMOTH_PY_BACKEND=docker` |
+创建会话时用 `lunamoth new NAME --isolation ...` 按会话选择：
 
-所有文件访问被限制在 `sandbox/` 下；没有裸 shell 工具，默认没有网络工具。退出时会清理运行时沙盒（用 `--no-clean-on-exit` 保留现场）。
+| 等级 | 边界 |
+| --- | --- |
+| `dir` | 子进程 + workspace 路径守卫 + 模块黑名单 + 资源限制（Claude Code 式目录信任） |
+| `sandbox`（默认） | 在上面基础上**叠加 OS 级牢笼**：macOS `sandbox-exec` / Linux `bubblewrap` —— 拒绝网络、写入限制在工作区内，无守护进程、无需 root |
+| `docker` | 容器：`--network none`、只读根文件系统、内存/CPU/PID 上限 —— 最强也最重 |
+
+所有文件访问被限制在会话沙盒内；没有裸 shell 工具，默认没有网络工具。退出时会清理运行时沙盒（用 `--no-clean-on-exit` 保留现场）。
 
 ## TUI 速查
 
 ```bash
-./run.sh                 # 分屏 TUI：上方输出流，下方操作员控制台
-./run.sh --forever       # 开启空闲自语循环
-./run.sh --cooldown 4    # 自语循环间隔秒数
-./run.sh --plain         # 旧版纯终端模式
-./run_web.sh             # 实验性网页端
+lunamoth                  # 三卡片 TUI：角色输出流 / 操作员控制台 / 环境遥测
+lunamoth --forever        # 开启空闲自语循环
+lunamoth --cooldown 4     # 自语循环间隔秒数
+lunamoth --plain          # 旧版纯终端模式
+./run_web.sh              # 实验性网页端（源码目录内）
 ```
 
 会话内命令：`/help`、`/status`、`/memory`、`/workspace`、`/wread <file>`、`/think on|off`、`/cooldown <s>`、`/exit`。

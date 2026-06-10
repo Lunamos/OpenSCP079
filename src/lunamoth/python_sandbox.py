@@ -8,9 +8,20 @@ import tempfile
 from pathlib import Path
 
 
+def backend() -> str:
+    """Python tool execution backend.
+
+    local   — subprocess + import/path guard + rlimits (dir-level trust)
+    sandbox — local PLUS an OS-level jail: sandbox-exec (macOS) or bubblewrap
+              (Linux). The default. Falls back to `local` when neither exists.
+    docker  — container with no network, read-only rootfs, resource caps.
+    """
+    return os.environ.get("LUNAMOTH_PY_BACKEND", os.environ.get("LUNAMOSS_PY_BACKEND", "sandbox")).strip().lower()
+
+
 def _run_docker_python(code: str, workspace: Path, timeout: float, memory_mb: int) -> str | None:
     docker = shutil.which("docker")
-    if not docker or os.environ.get("LUNAMOTH_PY_BACKEND", os.environ.get("LUNAMOSS_PY_BACKEND", "local")) != "docker":
+    if not docker or backend() != "docker":
         return None
     workspace.mkdir(parents=True, exist_ok=True)
     script = workspace / ".079_exec.py"
@@ -61,12 +72,21 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     return _orig_import(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded_import
 
+# NOTE: must avoid pathlib.Path.resolve()/stat() here — on Python >= 3.12 they
+# call os.stat, which we wrap below, and the wrapper calls back into _resolve
+# (infinite recursion). os.path.realpath only uses lstat/readlink (unwrapped).
+_ROOT_STR = os.path.realpath(str(ROOT))
+
 def _resolve(p):
-    q = pathlib.Path(p)
-    q = q.resolve() if q.is_absolute() else (pathlib.Path.cwd() / q).resolve()
-    if q != ROOT and ROOT not in q.parents:
+    s = os.fspath(p)
+    if isinstance(s, bytes):
+        s = s.decode()
+    if not os.path.isabs(s):
+        s = os.path.join(os.getcwd(), s)
+    q = os.path.realpath(s)
+    if q != _ROOT_STR and not q.startswith(_ROOT_STR + os.sep):
         raise PermissionError("path outside sandbox workspace")
-    return str(q)
+    return q
 
 _orig_open = builtins.open
 def guarded_open(file, *args, **kwargs):
@@ -121,23 +141,56 @@ os.chdir = guarded_chdir
 
 
 def _macos_sandbox_command(script: Path, workspace: Path) -> list[str] | None:
-    if os.environ.get("LUNAMOTH_USE_MACOS_SANDBOX", os.environ.get("LUNAMOSS_USE_MACOS_SANDBOX", "0")) not in {"1", "true", "yes"}:
+    if sys.platform != "darwin":
         return None
     sandbox_exec = shutil.which("sandbox-exec")
     if not sandbox_exec:
         return None
+    # Seatbelt layer: deny network, deny writes outside the workspace. Reads
+    # stay broad — restricting them breaks the interpreter on modern macOS,
+    # and read containment is already enforced by the GUARD preamble.
     profile = f'''
 (version 1)
 (deny default)
 (allow process*)
+(allow signal (target self))
 (allow sysctl-read)
 (allow mach-lookup)
-(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/Library/Developer") (subpath "{sys.prefix}"))
-(allow file-read* (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom"))
-(allow file-read* file-write* (subpath "{workspace.resolve()}"))
+(allow file-read*)
+(allow file-ioctl (literal "/dev/dtracehelper"))
+(allow file-write* (subpath "{workspace.resolve()}") (literal "/dev/null"))
 (deny network*)
 '''
-    return [sandbox_exec, "-p", profile, sys.executable, "-I", str(script)]
+    return [sandbox_exec, "-p", profile, str(Path(sys.executable).resolve()), "-I", str(script)]
+
+
+def _linux_bwrap_command(script: Path, workspace: Path) -> list[str] | None:
+    """Bubblewrap jail: new namespaces, no network, RO system, RW workspace only."""
+    if sys.platform != "linux":
+        return None
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        return None
+    ws = str(workspace.resolve())
+    cmd = [
+        bwrap, "--die-with-parent", "--unshare-all", "--clearenv",
+        "--setenv", "PATH", "/usr/bin:/bin",
+        "--setenv", "PYTHONNOUSERSITE", "1",
+        "--setenv", "LUNAMOTH_PY_ROOT", ws,
+        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    ]
+    for ro in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/alternatives", "/etc/ld.so.cache", sys.prefix):
+        cmd += ["--ro-bind-try", ro, ro]
+    cmd += ["--bind", ws, ws, "--chdir", ws, sys.executable, "-I", str(script)]
+    return cmd
+
+
+def os_sandbox_available() -> bool:
+    if sys.platform == "darwin":
+        return bool(shutil.which("sandbox-exec"))
+    if sys.platform == "linux":
+        return bool(shutil.which("bwrap"))
+    return False
 
 
 def run_limited_python(code: str, workspace: Path, timeout: float = 2.0, memory_mb: int = 256) -> str:
@@ -155,6 +208,11 @@ def run_limited_python(code: str, workspace: Path, timeout: float = 2.0, memory_
         "LUNAMOTH_PY_ROOT": str(workspace.resolve()),
     }
 
+    jail: list[str] | None = None
+    if backend() == "sandbox":
+        jail = _macos_sandbox_command(script, workspace) or _linux_bwrap_command(script, workspace)
+    uses_bwrap = bool(jail) and "bwrap" in jail[0]
+
     def limit_resources():
         try:
             import resource
@@ -162,11 +220,13 @@ def run_limited_python(code: str, workspace: Path, timeout: float = 2.0, memory_
             resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
             resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
             resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
-            resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+            # bwrap must fork its jailed child; sandbox-exec/plain python exec in place.
+            nproc = 16 if uses_bwrap else 0
+            resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
         except Exception:
             pass
 
-    cmd = _macos_sandbox_command(script, workspace) or [sys.executable, "-I", str(script)]
+    cmd = jail or [sys.executable, "-I", str(script)]
     try:
         proc = subprocess.run(
             cmd,

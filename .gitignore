@@ -117,3 +117,7 @@ sandbox/workspace/*
 
 # pre-rename config dir (still readable as fallback)
 .lunamoss/
+
+# reference repos for study (not ours)
+reference/
+.pytest-cache/
