@@ -21,6 +21,16 @@ def test_global_override_file(tmp_path, monkeypatch):
     assert rules.rules("en") == "my house rules"
 
 
+def test_card_override_hook_beats_global(tmp_path, monkeypatch):
+    monkeypatch.setenv("LUNAMOTH_HOME", str(tmp_path))
+    (tmp_path / "rules.md").write_text("global rules", encoding="utf-8")
+    # extensions.lunamoth.rules / rules_closer override both, beating the global file
+    assert rules.rules("en", card_override="card rules") == "card rules"
+    assert rules.closer("en", card_override="card closer") == "card closer"
+    # empty/blank override falls through to the default chain
+    assert rules.rules("en", card_override="  ") == "global rules"
+
+
 @pytest.fixture
 def agent(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")

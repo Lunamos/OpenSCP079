@@ -71,11 +71,23 @@ def _global_override() -> str | None:
         return None
 
 
-def rules(lang: str = "en") -> str:
-    """Neutral operating standard — include only when the chara has tools."""
+def rules(lang: str = "en", card_override: str | None = None) -> str:
+    """Neutral operating standard — include only when the chara has tools.
+
+    Resolution: card override (`extensions.lunamoth.rules`) > global
+    ~/.lunamoth/rules.md > bundled default. The bundled cards leave the card
+    override empty — it's an open hook for cards that want their own rules.
+    """
+    if card_override and card_override.strip():
+        return card_override.strip()
     return _global_override() or _RULES[_lang(lang)]
 
 
-def closer(lang: str = "en") -> str:
-    """Short reminder to place LAST — only when the chara has tools."""
+def closer(lang: str = "en", card_override: str | None = None) -> str:
+    """Short reminder to place LAST — only when the chara has tools.
+
+    Card override hook: `extensions.lunamoth.rules_closer`.
+    """
+    if card_override and card_override.strip():
+        return card_override.strip()
     return _CLOSER[_lang(lang)]

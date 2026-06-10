@@ -258,6 +258,11 @@ class LunaMothAgent:
         char, user = self.char_name(), self.settings.user_name
         tools_on = self._tools_active()
         msgs: list[str] = []
+        # A card MAY override the rules / closer via extensions.lunamoth.{rules,
+        # rules_closer}. Bundled cards leave these empty — it's just an open hook.
+        card_ext = self.character.defaults() if self.character else {}
+        card_rules = str(card_ext.get("rules", "") or "")
+        card_closer = str(card_ext.get("rules_closer", "") or "")
 
         # 1) Who it is — the character card IS the soul. Identity, voice and
         #    autonomy all come from the card; the engine adds no identity of its own.
@@ -270,7 +275,7 @@ class LunaMothAgent:
         #    your sandbox + your work must be real + act through tools). ONLY when
         #    the chara actually has tools; a tool-less chara is free to narrate.
         if tools_on:
-            msgs.append(apply_macros(rules_layer.rules(self.lang), char, user))
+            msgs.append(apply_macros(rules_layer.rules(self.lang, card_rules), char, user))
             # Native tool schemas already describe each tool, so no prose tool spec —
             # just a short, neutral nudge + the live env facts.
             net = "on" if status.get("network_access") else "off"
@@ -298,7 +303,7 @@ class LunaMothAgent:
         # 3) Closer — the last, strongest steer (SillyTavern post-history style),
         #    only when tools are on. Placed last so it weighs most before generation.
         if tools_on:
-            msgs.append(apply_macros(rules_layer.closer(self.lang), char, user))
+            msgs.append(apply_macros(rules_layer.closer(self.lang, card_closer), char, user))
         return msgs
 
 
