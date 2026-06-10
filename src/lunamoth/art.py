@@ -15,7 +15,6 @@ _ASSETS = Path(__file__).resolve().parent / "assets"
 _TOP = (0x6D, 0xB3, 0xE0)
 _BOTTOM = (0xFF, 0xFF, 0xFF)
 _SWEEP = "#eafaff"   # the bright moonlight bar that crosses the wordmark
-_TAGLINE_COLOR = "#9fd9ff"
 _DIM = "#5f7d8c"
 
 
@@ -80,13 +79,6 @@ def sweep_frames(compact: bool = False, step: int = 4, sweep_w: int = 6) -> list
     frames = [wordmark(compact, sweep_x=x, sweep_w=sweep_w) for x in range(-sweep_w, width + sweep_w, step)]
     frames.append(wordmark(compact, sweep_x=None))  # settle to static gradient
     return frames
-
-
-MOTH = "⟡  ·  ✦  ·  ⟡"
-
-
-def motif() -> str:
-    return f"[{_TAGLINE_COLOR}]{MOTH}[/]"
 
 
 def tagline(text: str = "an agentic character tavern · 月蛾") -> str:

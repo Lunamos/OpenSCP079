@@ -13,7 +13,6 @@ The CLI acts on the result; this module never launches a chara itself.
 from __future__ import annotations
 
 import datetime as _dt
-import sys
 import time
 
 from rich.console import Console

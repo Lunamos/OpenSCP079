@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import getpass
 import sys
-from pathlib import Path
 
 from .config import ROOT
 from .settings import PRESETS, Settings, load_settings, save_settings

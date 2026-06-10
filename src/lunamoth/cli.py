@@ -37,7 +37,6 @@ from . import __version__
 from . import sessions as S
 
 APP_DIR = Path(__file__).resolve().parents[2]  # repo checkout (dev or ~/.lunamoth/app)
-REPO_URL = "https://github.com/Lunamos/LunaMoth.git"
 
 # session isolation level -> python tool execution backend
 _ISOLATION_TO_BACKEND = {"dir": "local", "sandbox": "sandbox", "docker": "docker"}

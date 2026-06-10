@@ -15,10 +15,6 @@ import json
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from .config import ROOT
-
-THEMES_DIR = ROOT / "themes"
-
 # Default ASCII banner. Theme JSON may override `banner` with its own art.
 LUNAMOTH_BANNER = r"""
  _                     __  __       _   _
