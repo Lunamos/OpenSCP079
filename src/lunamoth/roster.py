@@ -73,7 +73,9 @@ def _hint(interactive: bool) -> Text:
 
 
 def _splash(console: Console, animate: bool) -> None:
-    compact = console.width < art.wordmark_width() + 2
+    # The compact block wordmark is the preferred LunaMoth look — always use it
+    # (the wide serif one is not used; keep it this way unless asked otherwise).
+    compact = True
     if animate and console.is_terminal:
         try:
             from rich.live import Live  # inline (screen=False) → stays in scrollback
@@ -104,7 +106,13 @@ def _raw_supported() -> bool:
 
 
 def _read_key() -> str:
-    """Return 'up'/'down'/'enter'/'esc'/'ctrl-c' or a single character."""
+    """Return 'up'/'down'/'enter'/'esc'/'ctrl-c' or a single character.
+
+    Reads the raw fd with os.read (NOT sys.stdin.read): Python's text buffer
+    would swallow the "[A" after an ESC, leaving select() to see an empty fd and
+    mis-report every arrow key as a bare Esc — which made ↑/↓ quit the launcher.
+    """
+    import os
     import select
     import termios
     import tty
@@ -113,18 +121,18 @@ def _read_key() -> str:
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":  # escape sequence (arrow keys) or a bare Esc
-            r, _, _ = select.select([sys.stdin], [], [], 0.05)
+        ch = os.read(fd, 1)
+        if ch == b"\x1b":  # escape sequence (arrow keys) or a bare Esc
+            r, _, _ = select.select([fd], [], [], 0.1)
             if not r:
                 return "esc"
-            seq = sys.stdin.read(2)
-            return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(seq, "esc")
-        if ch in ("\r", "\n"):
+            seq = os.read(fd, 2)
+            return {b"[A": "up", b"[B": "down", b"[C": "right", b"[D": "left"}.get(seq, "esc")
+        if ch in (b"\r", b"\n"):
             return "enter"
-        if ch == "\x03":
+        if ch == b"\x03":
             return "ctrl-c"
-        return ch
+        return ch.decode("utf-8", "ignore")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
