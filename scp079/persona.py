@@ -11,8 +11,12 @@ def language() -> str:
     return "en" if lang.startswith("en") else "zh"
 
 
+# Name used for display when no character card is selected (persona comes from cards).
+DEFAULT_NAME = "Entity"
+
+
 def persona_path() -> Path:
-    return ROOT / "prompts" / f"079_personality_{language()}.md"
+    return ROOT / "prompts" / f"default_persona_{language()}.md"
 
 
 def tools_path() -> Path:

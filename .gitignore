@@ -82,6 +82,19 @@ dmypy.json
 docs/_build/
 .streamlit/secrets.toml
 
+# Open SCP 079 runtime config (holds API keys — never commit)
+.scp079/
+
+# User-dropped SillyTavern cards / world books (keep the shipped SCP assets + .gitkeep)
+characters/*
+worlds/*
+!characters/.gitkeep
+!worlds/.gitkeep
+!characters/SCP-079.zh.json
+!characters/SCP-079.en.json
+!worlds/SCP-Foundation.zh.json
+!worlds/SCP-Foundation.en.json
+
 # Open SCP 079 runtime artifacts
 sandbox/logs/*.jsonl
 sandbox/control/*

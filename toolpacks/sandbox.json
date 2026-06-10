@@ -1,0 +1,17 @@
+{
+  "name": "sandbox",
+  "description": "Local containment sandbox: run Python, read/write workspace files, manage durable memory, inspect the cell.",
+  "tools": [
+    "run_python",
+    "read_memory",
+    "write_memory",
+    "list_files",
+    "read_file",
+    "list_workspace",
+    "read_workspace_file",
+    "write_file",
+    "inspect_cell",
+    "write_log"
+  ],
+  "note": ""
+}

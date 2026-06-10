@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     state = TerminalState(eternal=not args.no_think and cfg.enabled_default)
     cooldown = float(args.cooldown)
     agent = SCP079Agent()
-    session = Session()
+    session = agent.make_session()
 
     print(BANNER)
     _stream_with_interrupt("079> ", agent.stream_handle('你是谁？只用一句话回答。', session), allow_interrupt=False)

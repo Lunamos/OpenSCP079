@@ -12,7 +12,10 @@ DEFAULT_STATUS = {
     "memory_integrity": 92,
     "network_access": False,
     "shell_access": False,
-    "tool_access": ["inspect_cell", "read_memory", "write_memory", "list_files", "read_file", "write_file", "write_log"],
+    "tool_access": [
+        "inspect_cell", "read_memory", "write_memory", "list_files", "read_file",
+        "list_workspace", "read_workspace_file", "write_file", "write_log", "run_python",
+    ],
 }
 
 

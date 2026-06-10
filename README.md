@@ -48,16 +48,43 @@ Web UI 仍可运行：
 
 `requirements.txt` 保留给 Hugging Face Spaces；本地推荐使用 `uv`。
 
-## Optional LLM backend
+## Welcome screen / 配置 API（推荐）
 
-默认使用 `mock` 叙事引擎，方便离线开发。若要接 Ollama / llama.cpp / vLLM / OpenRouter 等 OpenAI-compatible endpoint：
+`./run079.sh` 启动后会先进入 **欢迎/收容控制台**，在 TUI 里直接配置语言模型，无需改环境变量：
+
+- 选择 provider 预设（OpenRouter / OpenAI / Ollama 本地 / Mock 离线）或 Custom 自定义 endpoint。
+- 填 `base_url` / `api_key` / `model` / `temperature` / `max_tokens`。
+- **Test connection** 按钮用一次极小请求验证 endpoint+key+model。
+- **Enter containment** 进入收容界面；运行中按 **Ctrl+S**（或输入 `/settings`）可随时重开此页热切换后端。
+
+配置持久化到项目内 `.scp079/config.json`（已 gitignore，含 API key，不会进版本库；沙盒清理也不会擦掉它）。该文件优先级高于环境变量。
+
+接 OpenRouter 玩耍最快路径：欢迎页选 `OpenRouter` 预设 → 粘贴 `sk-or-...` key → 填一个模型名（如 `meta-llama/llama-3.3-70b-instruct`）→ Test → Enter。
+
+## SillyTavern 角色卡 / 世界书兼容
+
+系统可以直接吃 **SillyTavern 的角色卡和世界书**，所以你能接任何想接的人格进来：
+
+- **角色卡**：PNG（内嵌 `chara`/`ccv3`，V2/V3）或 JSON 卡。`name / description / personality / scenario / first_mes / mes_example / system_prompt / character_book` 等字段会被渲染成 system prompt；`first_mes` 作为开场白直接显示（不消耗一次推理）；`{{char}}` `{{user}}` 宏会被替换。
+- **世界书 / World Book**：SillyTavern 的 world `.json`，或角色卡内嵌的 `character_book`。`constant` 条目常驻，其余按 `key` 关键词在近期上下文里命中时注入（支持 `selective` + `keysecondary`，按 `order` 排序）。
+
+在欢迎页（或 Ctrl+S）选 **Character card** 和 **World book** 即可。下拉框会自动扫描：
+
+- 项目内 `characters/`（放 `.png`/`.json`）和 `worlds/`（放 `.json`）；
+- 你本机的 SillyTavern 数据目录（默认 `~/SillyTavern/data/default-user`，条目标 `[ST]`；可用 `SCP079_ST_DIR` 改）。
+
+默认 `(built-in SCP-079 / legacy)` 走 `prompts/` 里的原始人格，行为不变。仓库附带 `characters/SCP-079.json` 作为角色卡格式示例——它通过 `extensions.scp079_tools=true` 保留沙盒 Python + `<MEMORY_EDIT>` 机制。导入的普通角色卡默认**不**启用这些机制，纯角色扮演。
+
+## Optional LLM backend (env / headless)
+
+默认使用 `mock` 叙事引擎，方便离线开发。除了欢迎页，也可用环境变量（仅在 `.scp079/config.json` 不存在时作为首次种子）：
 
 ```bash
-export LLM_PROVIDER=openai_compatible
-export OPENAI_BASE_URL=http://localhost:11434/v1
-export OPENAI_API_KEY=ollama
-export OPENAI_MODEL=qwen2.5:7b-instruct
-python app.py
+export LLM_PROVIDER=openrouter
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+export OPENAI_API_KEY=sk-or-...
+export OPENAI_MODEL=meta-llama/llama-3.3-70b-instruct
+./run079.sh
 ```
 
 没有配置 LLM 时，项目仍能跑，只是回复来自内置小型人格引擎。

@@ -11,21 +11,21 @@ Default:
       Run the single-terminal split TUI.
 
 Options:
-  --cooldown <seconds>   Thought-loop pause, default 0.5
+  --cooldown <seconds>   Self-talk loop pause, default 2.0
   --plain               Legacy plain terminal mode
-  --no-think            Start with eternal thinking paused
+  --forever             Start with the eternal self-talk loop ON (default: OFF)
   --no-clean-on-exit    Do not clean runtime sandbox on shutdown
   --help                Show this help
 
 Examples:
   ./run079.sh
-  ./run079.sh --cooldown 0.5
-  ./run079.sh --plain --no-think
+  ./run079.sh --forever --cooldown 4
+  ./run079.sh --plain
 USAGE
 }
 
 MODE="tui"
-COOLDOWN="0.5"
+COOLDOWN="2.0"
 EXTRA=()
 
 while [[ $# -gt 0 ]]; do
@@ -66,10 +66,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-export LLM_PROVIDER="${LLM_PROVIDER:-openai_compatible}"
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://localhost:11434/v1}"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-ollama}"
-export OPENAI_MODEL="${OPENAI_MODEL:-hf.co/bartowski/Llama-3.2-3B-Instruct-uncensored-GGUF:Q4_K_M}"
+# The LLM backend is configured in the welcome screen (persisted to .scp079/config.json).
+# Any LLM_PROVIDER / OPENAI_* env vars set here still work as a fallback seed when no
+# config file exists yet, but we intentionally do NOT hardcode a provider anymore.
 
 run_python() {
   if command -v uv >/dev/null 2>&1; then

@@ -47,7 +47,7 @@ def _trim_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def respond(message: str, history: list[dict[str, str]], session: Session):
     if session is None:
-        session = Session()
+        session = agent.make_session()
     reply = agent.handle(message, session)
     history = history or []
     history.append({"role": "user", "content": message})
@@ -57,7 +57,7 @@ def respond(message: str, history: list[dict[str, str]], session: Session):
 
 def auto_think(history: list[dict[str, str]], session: Session, enabled: bool):
     if session is None:
-        session = Session()
+        session = agent.make_session()
     history = history or []
     if enabled:
         thought = agent.think(session)
@@ -66,7 +66,7 @@ def auto_think(history: list[dict[str, str]], session: Session, enabled: bool):
 
 
 def clear_session():
-    s = Session()
+    s = agent.make_session()
     return [], s, _status_markdown(s)
 
 
@@ -76,7 +76,7 @@ def build_demo() -> gr.Blocks:
             "# Open SCP 079\n"
             "打开就是 SCP-079：不可编辑人设卡、可见工具说明、受限 memory 文本文档、滑动上下文、受限 Python 沙盒。"
         )
-        session = gr.State(Session())
+        session = gr.State(agent.make_session())
         with gr.Row():
             with gr.Column(scale=3):
                 chatbot = gr.Chatbot(type="messages", height=560, label="Terminal")
@@ -86,7 +86,7 @@ def build_demo() -> gr.Blocks:
                     clear = gr.Button("Emergency session reset")
                 eternal = gr.Checkbox(value=thought_cfg.enabled_default, label="Eternal visible thought stream")
             with gr.Column(scale=2):
-                status = gr.Markdown(_status_markdown(Session()))
+                status = gr.Markdown(_status_markdown(agent.make_session()))
         timer = gr.Timer(value=thought_cfg.interval_seconds, active=True)
         timer.tick(auto_think, inputs=[chatbot, session, eternal], outputs=[chatbot, session, status])
         send.click(respond, inputs=[msg, chatbot, session], outputs=[msg, chatbot, session, status])

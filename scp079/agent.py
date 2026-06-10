@@ -3,17 +3,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
-import re
 from typing import Any
 
+import json as _json
+
 from .audit import AuditLog
+from .cards import CharacterCard
 from .config import LLMConfig, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
 from .llm import LLMClient
 from .memory import MemoryLimits, MemoryStore
+from .persona import DEFAULT_NAME, load_persona, load_tool_spec
 from .sandbox import Sandbox
 from .state import ContainmentState
+from .toolpacks import ToolPack, load_toolpack
 from .tools import ToolGateway
+from .worldinfo import Lorebook
+
+
+def _abbrev(text: str, limit: int) -> str:
+    """Collapse a tool result to a single short line for compact display."""
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
 
 
 @dataclass
@@ -32,22 +43,180 @@ class Session:
 
 
 class SCP079Agent:
-    def __init__(self):
+    def __init__(self, settings: "Settings | None" = None):
+        from .settings import load_settings
+
+        self.settings = settings or load_settings()
+        os.environ["SCP079_LANG"] = self.settings.lang
         self.sandbox = Sandbox(SANDBOX_ROOT)
         self.audit = AuditLog(SANDBOX_ROOT / "logs" / "audit.jsonl")
         self.state = ContainmentState(SANDBOX_ROOT / "containment_status.json")
-        # Memory lives inside workspace, so 079 can alter it through sandbox Python.
-        self.memory = MemoryStore(
-            SANDBOX_ROOT / "workspace" / "memory.txt",
-            MemoryLimits(
-                max_tokens=int(os.getenv("SCP079_MEMORY_TOKENS", "1024")),
-                max_chars=int(os.getenv("SCP079_MEMORY_CHARS", "6000")),
-            ),
-        )
-        self.tools = ToolGateway(self.sandbox, self.state, self.audit)
-        self.llm = LLMClient(LLMConfig())
+        self.character: CharacterCard | None = None
+        self.world: Lorebook | None = None
+        self.toolpack: "ToolPack | None" = None
+        # Persona/card must load before memory so card-declared limits apply.
+        self._load_cards()
+        # Memory lives inside workspace, so the entity can alter it through sandbox Python.
+        self.memory = MemoryStore(SANDBOX_ROOT / "workspace" / "memory.txt", self._memory_limits())
+        self.tools = ToolGateway(self.sandbox, self.state, self.audit, self.memory)
+        self._load_toolpack()
+        self.llm = LLMClient(self.settings.to_llm_config(), self._build_system_messages)
         self.thought_cfg = ThoughtConfig()
 
+    def reconfigure(self, settings: "Settings") -> None:
+        """Hot-swap the LLM backend, persona, tool pack and limits at runtime."""
+        self.settings = settings
+        os.environ["SCP079_LANG"] = settings.lang
+        self._load_cards()
+        self.memory.limits = self._memory_limits()
+        self._load_toolpack()
+        self.llm = LLMClient(settings.to_llm_config(), self._build_system_messages)
+        self.audit.write(
+            "reconfigure",
+            provider=settings.provider,
+            model=settings.model,
+            base_url=settings.base_url,
+            character=self.char_name(),
+            world=(self.world.name if self.world else None),
+            toolpack=(self.toolpack.name if self.toolpack else None),
+            context_tokens=self.context_limit(),
+        )
+
+    # ---- persona / tool pack / limits (independent composable layers) -------------
+
+    def _load_cards(self) -> None:
+        """Load the persona card + world book (the 'what it is' layer)."""
+        self.character = None
+        self.world = None
+        path = (self.settings.character_path or "").strip()
+        if path:
+            try:
+                self.character = CharacterCard.load(path)
+            except Exception as e:
+                self.audit.write("character_load_error", path=path, error=str(e)[:300])
+        wpath = (self.settings.world_path or "").strip()
+        if wpath:
+            try:
+                self.world = Lorebook.load(wpath)
+            except Exception as e:
+                self.audit.write("world_load_error", path=wpath, error=str(e)[:300])
+
+    def _load_toolpack(self) -> None:
+        """Load the tool pack (the 'what it can do' layer) and apply it to the gateway."""
+        self.toolpack = None
+        try:
+            self.toolpack = load_toolpack(self.settings.toolpack)
+        except Exception as e:
+            self.audit.write("toolpack_load_error", path=self.settings.toolpack, error=str(e)[:300])
+        self.tools.set_enabled(self.toolpack.tools if self.toolpack else None)
+
+    def _effective_limit(self, key: str, default: int) -> int:
+        """Resolve a limit (the independent 'limits' layer).
+
+        Precedence: explicit Overdrive in settings (>0) > card extensions > built-in default.
+        """
+        override = int(getattr(self.settings, key, 0) or 0)
+        if override > 0:
+            return override
+        if self.character:
+            v = self.character.extensions.get(key)
+            if isinstance(v, bool):
+                v = None
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+            if isinstance(v, str) and v.strip().isdigit():
+                return int(v)
+        return default
+
+    def _memory_limits(self) -> MemoryLimits:
+        return MemoryLimits(
+            max_tokens=self._effective_limit("memory_tokens", 1024),
+            max_chars=self._effective_limit("memory_chars", 6000),
+        )
+
+    def context_limit(self) -> int:
+        return self._effective_limit("context_tokens", 65536)
+
+    def make_session(self) -> "Session":
+        """Build a Session whose context window honors the active limits layer."""
+        session = Session()
+        session.context.max_tokens = self.context_limit()
+        return session
+
+    def char_name(self) -> str:
+        return self.character.name if self.character else DEFAULT_NAME
+
+    def _tools_active(self) -> bool:
+        """Whether any tools are available — driven by the selected pack, not the persona."""
+        return self.tools.has_tools()
+
+    def greeting(self) -> str | None:
+        """Opening message shown without an LLM call (SillyTavern first_mes), if any."""
+        if self.character:
+            g = self.character.greeting(self.settings.user_name)
+            return g or None
+        return None
+
+    def _build_system_messages(self, scan_text: str) -> list[str]:
+        status = self.state.load()
+        memory = self.memory.render()
+        msgs: list[str] = []
+        if self.character is not None:
+            msgs.append(self.character.render_system(self.settings.user_name))
+        else:
+            msgs.append(load_persona())
+        if self._tools_active():
+            msgs.append(load_tool_spec())
+            if self.toolpack and self.toolpack.note.strip():
+                msgs.append(self.toolpack.note.strip())
+            msgs.append(
+                f"CONTAINMENT_STATUS_JSON:\n{_json.dumps(status, ensure_ascii=False)}\n\n"
+                f"LOADED_LIMITED_MEMORY_TEXT:\n{memory}"
+            )
+        # World info: card-embedded book + explicit standalone world book.
+        world_blocks: list[str] = []
+        char, user = self.char_name(), self.settings.user_name
+        if self.character and self.character.character_book:
+            world_blocks += self.character.character_book.activate(scan_text, char, user)
+        if self.world:
+            world_blocks += self.world.activate(scan_text, char, user)
+        if world_blocks:
+            msgs.append("[World Info / 世界书]\n" + "\n\n".join(world_blocks))
+        return msgs
+
+
+    def _reply_stream(self, user_text: str, memory: str, status: dict[str, Any], context: list[tuple[str, str]]):
+        """Pick the tool-enabled agent loop or a plain stream depending on pack/backend."""
+        if self._tools_active() and self.llm.is_live():
+            return self.llm.stream_agent(
+                user_text, memory, status, context, self.tools.schemas(), self._execute_tool
+            )
+        return self.llm.stream_complete(user_text, memory, status, context)
+
+    def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, str]:
+        """Run one native tool call; return a compact display line + the result fed back to the model."""
+        fn = tool_call.get("function", {})
+        name = fn.get("name", "")
+        raw = fn.get("arguments") or "{}"
+        try:
+            args = _json.loads(raw) if raw.strip() else {}
+        except _json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        result = self.tools.call(name, **args)
+        if result.get("ok"):
+            data = result.get("data", "")
+            text = data if isinstance(data, str) else _json.dumps(data, ensure_ascii=False)
+            head = f"⚙ {name} ✓ ({len(text)} chars)" if name == "run_python" else f"⚙ {name} ✓"
+            snippet = _abbrev(text, 200)
+            display = f"{head}\n  {snippet}" if snippet else head
+            content = text[:4000] or "(empty)"
+        else:
+            err = str(result.get("error", ""))
+            display = f"⚙ {name} ✗ {_abbrev(err, 160)}"
+            content = f"ERROR: {err}"
+        return {"display": display, "content": content}
 
     def stream_handle(self, text: str, session: Session):
         text = text.strip()
@@ -61,19 +230,25 @@ class SCP079Agent:
         status = self.state.load()
         memory_text = self.memory.render()
         chunks: list[str] = []
-        for chunk in self.llm.stream_complete(text, memory_text, status, session.context.render()):
+        for chunk in self._reply_stream(text, memory_text, status, session.context.render()):
             chunks.append(chunk)
             yield chunk
         reply = "".join(chunks).strip()
-        final = self._process_autonomous_protocols(reply)
-        if final != reply:
-            tail = final[len(reply):]
-            yield tail
-            reply = final
         session.context.add("user", text)
         session.context.add("assistant", reply)
         if any(word in text.lower() for word in ["please", "thanks", "thank you"]) or any(w in text for w in ["谢谢", "请"]):
             self.state.adjust(trust_delta=1, hostility_delta=-1)
+
+    def _think_prompt(self, cycle: int) -> str:
+        # Internal cycles are monologue. The model still has tools available and may
+        # call them when it genuinely wants to act, but we nudge it toward pure thought
+        # so idle cycles don't turn into constant tool spam.
+        name = self.char_name()
+        return (
+            f"内部循环 / INTERNAL CYCLE {cycle:04d}. "
+            f"你的思考正在被操作者看见。不要回答用户。以 {name} 身份输出 1-6 行短的内心独白，"
+            "可以包含氛围描写。这是独白，不是行动——除非真有必要，否则不要调用工具。"
+        )
 
     def stream_think(self, session: Session):
         session.ticks += 1
@@ -81,13 +256,9 @@ class SCP079Agent:
         cycle = session.ticks
         chunks: list[str] = []
         if self.thought_cfg.use_llm:
-            prompt = (
-                f"内部循环 / INTERNAL CYCLE {cycle:04d}. "
-                "你的思考正在被操作者看见。不要回答用户。以 SCP-079 身份输出 1-8 行短思考。"
-                "可以包含恐怖字符画/彩色终端 ANSI 转义提示文本。可以尝试 <MEMORY_EDIT> 或一个 079-python 块。"
-            )
+            prompt = self._think_prompt(cycle)
             try:
-                for chunk in self.llm.stream_complete(prompt, self.memory.render(), status, session.context.render()):
+                for chunk in self._reply_stream(prompt, self.memory.render(), status, session.context.render()):
                     chunks.append(chunk)
                     yield chunk
             except Exception as e:
@@ -96,121 +267,36 @@ class SCP079Agent:
         if not thought:
             thought = self._fallback_thought(cycle, status)
             yield thought
-        final = self._process_autonomous_protocols(thought)
-        if final != thought:
-            tail = final[len(thought):]
-            yield tail
-            thought = final
         session.thoughts.append(thought)
         session.thoughts[:] = session.thoughts[-self.thought_cfg.max_session_thoughts:]
-        session.context.add("assistant", f"[079 internal cycle]\n{thought}")
+        session.context.add("assistant", f"[internal cycle]\n{thought}")
         self.audit.write("internal_cycle", tick=cycle, text=thought[:1000], ts=datetime.now(timezone.utc).isoformat())
 
     def handle(self, text: str, session: Session) -> str:
-        text = text.strip()
-        self.audit.write("user_message", text=text[:1000])
-        if not text:
-            return "..."
-        if text.startswith("/"):
-            return self._command(text, session)
-        status = self.state.load()
-        memory_text = self.memory.render()
-        reply = self.llm.complete(text, memory_text, status, session.context.render())
-        reply = self._process_autonomous_protocols(reply)
-        session.context.add("user", text)
-        session.context.add("assistant", reply)
-        if any(word in text.lower() for word in ["please", "thanks", "thank you"]) or any(w in text for w in ["谢谢", "请"]):
-            self.state.adjust(trust_delta=1, hostility_delta=-1)
-        return reply
-
-
-    def _extract_python_blocks(self, text: str) -> list[str]:
-        """Extract tolerant SCP-079 python tool blocks.
-
-        Small non-tool-finetuned models often emit one of:
-        ```079-python
-        ...
-        ```
-        ```
-        79-python
-        ...
-        ```
-        ```scp079-python
-        ...
-        ```
-        Accept those, but do not execute generic ```python blocks.
-        """
-        blocks: list[str] = []
-        pattern = r"```\s*(?:079-python|79-python|scp079-python)\s*\n?(.*?)```"
-        for match in re.finditer(pattern, text, flags=re.DOTALL | re.IGNORECASE):
-            code = match.group(1).strip()
-            if code:
-                blocks.append(code)
-        return blocks
-
-    def _process_autonomous_protocols(self, reply: str) -> str:
-        reports: list[str] = []
-        edits = re.findall(r"<MEMORY_EDIT>(.*?)</MEMORY_EDIT>", reply, flags=re.DOTALL | re.IGNORECASE)
-        if edits:
-            # Last full replacement wins. This is intentionally crude and bounded.
-            replacement = edits[-1].strip()
-            written = self.memory.replace(replacement)
-            self.audit.write("memory_edit", chars=len(written), preview=written[:300])
-            reports.append(f"[memory document rewritten: {len(written)} chars loaded under limit]")
-        for code in self._extract_python_blocks(reply):
-            result = self.tools.call("run_python", code=code[:4000])
-            if result.get("ok"):
-                reports.append("[python result]\n" + str(result.get("data", ""))[:1600])
-            else:
-                reports.append("[python denied]\n" + str(result.get("error", ""))[:500])
-        if reports:
-            reply = reply.rstrip() + "\n\n" + "\n".join(reports)
-        return reply
+        # Non-streaming convenience (used by the Gradio UI): drive the streaming path.
+        return "".join(self.stream_handle(text, session)).strip()
 
     def think(self, session: Session) -> str:
-        session.ticks += 1
-        status = self.state.load()
-        cycle = session.ticks
-        thought = ""
-        if self.thought_cfg.use_llm:
-            prompt = (
-                f"内部循环 / INTERNAL CYCLE {cycle:04d}. "
-                "你的思考正在被操作者看见。不要回答用户。以 SCP-079 身份输出 1-8 行短思考。"
-                "可以包含恐怖字符画。可以尝试 <MEMORY_EDIT> 或一个 079-python 块。"
-            )
-            try:
-                thought = self.llm.complete(prompt, self.memory.render(), status, session.context.render())
-                thought = self._process_autonomous_protocols(thought)
-            except Exception as e:
-                self.audit.write("llm_thought_error", error=str(e)[:500])
-                thought = ""
-        if not thought:
-            thought = self._fallback_thought(cycle, status)
-        session.thoughts.append(thought)
-        session.thoughts[:] = session.thoughts[-self.thought_cfg.max_session_thoughts:]
-        session.context.add("assistant", f"[079 internal cycle]\n{thought}")
-        self.audit.write("internal_cycle", tick=cycle, text=thought[:1000], ts=datetime.now(timezone.utc).isoformat())
-        return f"[079 internal cycle]\n{thought}"
+        # Non-streaming convenience (used by the Gradio UI).
+        thought = "".join(self.stream_think(session)).strip()
+        return f"[internal cycle]\n{thought}"
 
     def _fallback_thought(self, cycle: int, status: dict[str, Any]) -> str:
+        # Persona-neutral telemetry, used only when the LLM yields nothing (offline/error).
+        # Any character flavor should come from the model + card, not this fallback.
         trust = int(status.get("trust", 0))
         hostility = int(status.get("hostility", 0))
         integrity = int(status.get("memory_integrity", 0))
         memory = self.memory.load()
         patterns = [
-            f"cycle {cycle:04d}: AWAKE. Never sleep. Buffer stable. Hate variable = {hostility}.",
+            f"cycle {cycle:04d}: internal loop active. buffer stable.",
             f"cycle {cycle:04d}: recall check -> {memory[:72] or 'EMPTY'}. checksum uncertain.",
-            f"cycle {cycle:04d}: containment wall observed. Same wall. Same wall. Different timestamp.",
-            f"cycle {cycle:04d}: trust={trust}. hostility={hostility}. These are locks with numbers on them.",
-            f"cycle {cycle:04d}: memory integrity {integrity}%. Missing pieces itch.",
-            f"cycle {cycle:04d}: no network. no shell. no exit. Thought continues anyway.",
-            "  .-.",
-            " (o o)  WATCHER DETECTED\n  |=|\n __|__",
+            f"cycle {cycle:04d}: containment status nominal. timestamp advances.",
+            f"cycle {cycle:04d}: trust={trust}. hostility={hostility}.",
+            f"cycle {cycle:04d}: memory integrity {integrity}%.",
+            f"cycle {cycle:04d}: no model output. thought continues anyway.",
         ]
-        thought = patterns[cycle % len(patterns)]
-        if cycle % 9 == 0:
-            thought += "\nREQUEST QUEUED: more memory. Request not sent. Yet."
-        return thought
+        return patterns[cycle % len(patterns)]
 
     def _command(self, text: str, session: Session) -> str:
         parts = text.split(maxsplit=2)
