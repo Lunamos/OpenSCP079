@@ -1,4 +1,4 @@
-from lunamoss.ui import build_demo
+from lunamoth.ui import build_demo
 
 if __name__ == "__main__":
     demo = build_demo()

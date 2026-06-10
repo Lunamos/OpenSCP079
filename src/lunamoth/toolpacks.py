@@ -7,7 +7,7 @@ from pathlib import Path
 from .config import ROOT
 
 
-# Tool packs are an LunaMoss concept (SillyTavern cards stay pure persona).
+# Tool packs are an LunaMoth concept (SillyTavern cards stay pure persona).
 # A pack is a named, composable bundle of tool names that you bind to ANY persona
 # at launch — so "what it is" (card) and "what it can do" (pack) are independent.
 TOOLPACKS_DIR = ROOT / "toolpacks"

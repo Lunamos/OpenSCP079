@@ -82,8 +82,8 @@ dmypy.json
 docs/_build/
 .streamlit/secrets.toml
 
-# LunaMoss runtime config (holds API keys — never commit)
-.lunamoss/
+# LunaMoth runtime config (holds API keys — never commit)
+.lunamoth/
 .scp079/
 
 # User-dropped SillyTavern cards / world books (keep bundled assets, licenses + .gitkeep)
@@ -93,16 +93,16 @@ worlds/*
 !characters/LICENSE-CC-BY-SA-3.0.md
 !worlds/.gitkeep
 !worlds/LICENSE-CC-BY-SA-3.0.md
-!characters/LunaMoss.zh.json
-!characters/LunaMoss.en.json
-!worlds/LunaMoss.zh.json
-!worlds/LunaMoss.en.json
+!characters/LunaMoth.zh.json
+!characters/LunaMoth.en.json
+!worlds/LunaMoth.zh.json
+!worlds/LunaMoth.en.json
 !characters/SCP-079.zh.json
 !characters/SCP-079.en.json
 !worlds/SCP-Foundation.zh.json
 !worlds/SCP-Foundation.en.json
 
-# LunaMoss runtime artifacts
+# LunaMoth runtime artifacts
 sandbox/logs/*.jsonl
 sandbox/control/*
 sandbox/workspace/*
@@ -111,6 +111,9 @@ sandbox/workspace/*
 !sandbox/workspace/.gitkeep
 !sandbox/workspace/memory.txt
 
-# LunaMoss local config (may contain API keys)
-.lunamoss/
+# LunaMoth local config (may contain API keys)
+.lunamoth/
 .scp079/
+
+# pre-rename config dir (still readable as fallback)
+.lunamoss/

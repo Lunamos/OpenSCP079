@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SANDBOX_ROOT = Path(os.getenv("LUNAMOSS_SANDBOX", os.getenv("SCP079_SANDBOX", ROOT / "sandbox"))).resolve()
+SANDBOX_ROOT = Path(os.getenv("LUNAMOTH_SANDBOX", os.getenv("LUNAMOSS_SANDBOX", ROOT / "sandbox"))).resolve()
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,8 @@ class GitHubMemoryConfig:
     repo: str = os.getenv("GITHUB_REPO", "")
     branch: str = os.getenv("GITHUB_BRANCH", "main")
     path: str = os.getenv("GITHUB_MEMORY_PATH", "sandbox/memory.json")
-    committer_name: str = os.getenv("GITHUB_COMMITTER_NAME", "LunaMoss")
-    committer_email: str = os.getenv("GITHUB_COMMITTER_EMAIL", "lunamoss@example.invalid")
+    committer_name: str = os.getenv("GITHUB_COMMITTER_NAME", "LunaMoth")
+    committer_email: str = os.getenv("GITHUB_COMMITTER_EMAIL", "lunamoth@example.invalid")
 
 
 @dataclass(frozen=True)

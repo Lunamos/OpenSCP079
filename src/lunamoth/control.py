@@ -11,7 +11,7 @@ from .config import SANDBOX_ROOT
 DEFAULT_FIFO = SANDBOX_ROOT / "control" / "operator.in"
 
 HELP = """
-LunaMoss operator console
+LunaMoth operator console
 
 Raw input is sent directly to character.
 
@@ -41,12 +41,12 @@ def send_line(writer: TextIO, line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="LunaMoss operator control console")
+    parser = argparse.ArgumentParser(description="LunaMoth operator control console")
     parser.add_argument("--fifo", default=str(DEFAULT_FIFO), help="display input FIFO")
     args = parser.parse_args(argv)
     fifo = Path(args.fifo)
 
-    print("LunaMoss operator console")
+    print("LunaMoth operator console")
     print(f"display FIFO: {fifo}")
     print("type /help for console commands; raw text is sent to 079")
 

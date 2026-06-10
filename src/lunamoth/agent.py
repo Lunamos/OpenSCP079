@@ -36,8 +36,8 @@ def _abbrev(text: str, limit: int) -> str:
 @dataclass
 class Session:
     context: ContextBuffer = field(default_factory=lambda: ContextBuffer(
-        max_tokens=int(os.getenv("LUNAMOSS_CONTEXT_TOKENS", os.getenv("SCP079_CONTEXT_TOKENS", "65536"))),
-        trim_buffer_tokens=int(os.getenv("LUNAMOSS_CONTEXT_BUFFER_TOKENS", os.getenv("SCP079_CONTEXT_BUFFER_TOKENS", "4096"))),
+        max_tokens=int(os.getenv("LUNAMOTH_CONTEXT_TOKENS", os.getenv("LUNAMOSS_CONTEXT_TOKENS", "65536"))),
+        trim_buffer_tokens=int(os.getenv("LUNAMOTH_CONTEXT_BUFFER_TOKENS", os.getenv("LUNAMOSS_CONTEXT_BUFFER_TOKENS", "4096"))),
     ))
     thoughts: list[str] = field(default_factory=list)
     ticks: int = 0
@@ -48,12 +48,12 @@ class Session:
         return self.context.render()
 
 
-class LunaMossAgent:
+class LunaMothAgent:
     def __init__(self, settings: "Settings | None" = None):
         from .settings import load_settings
 
         self.settings = settings or load_settings()
-        os.environ["LUNAMOSS_LANG"] = self.settings.lang
+        os.environ["LUNAMOTH_LANG"] = self.settings.lang
         self.sandbox = Sandbox(SANDBOX_ROOT)
         self.audit = AuditLog(SANDBOX_ROOT / "logs" / "audit.jsonl")
         self.state = ContainmentState(SANDBOX_ROOT / "containment_status.json")
@@ -72,7 +72,7 @@ class LunaMossAgent:
     def reconfigure(self, settings: "Settings") -> None:
         """Hot-swap the LLM backend, persona, tool pack and limits at runtime."""
         self.settings = settings
-        os.environ["LUNAMOSS_LANG"] = settings.lang
+        os.environ["LUNAMOTH_LANG"] = settings.lang
         self._load_cards()
         self.memory.limits = self._memory_limits()
         self._load_toolpack()
@@ -93,7 +93,7 @@ class LunaMossAgent:
     def _load_cards(self) -> None:
         """Load the persona card + world book (the 'what it is' layer).
 
-        An empty character path means the bundled default character (LunaMoss
+        An empty character path means the bundled default character (LunaMoth
         月蛾); its paired world book is auto-loaded too unless a world was
         chosen explicitly. The generic prompts/ persona remains the fallback
         when no card can be loaded at all.
@@ -361,4 +361,4 @@ class LunaMossAgent:
 
 
 # Backward-compatible alias for older imports.
-SCP079Agent = LunaMossAgent
+SCP079Agent = LunaMothAgent

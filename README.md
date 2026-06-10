@@ -1,4 +1,4 @@
-<h1 align="center">LunaMoss 🌙</h1>
+<h1 align="center">LunaMoth 🌙</h1>
 
 <p align="center"><i>An agentic character tavern — character cards, world books, tool packs, and hard limits, composed at launch.</i></p>
 
@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="#roadmap">Roadmap</a> ·
   <a href="#features">Features</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#connecting-a-model">Models</a> ·
   <a href="#content">Content</a> ·
-  <a href="#roadmap">Roadmap</a> ·
   <a href="#license--acknowledgements">License</a>
 </p>
 
@@ -21,13 +21,24 @@
 
 ---
 
-**LunaMoss is a runtime for agentic roleplay characters.** Unlike a plain chat frontend, a LunaMoss character can actually *do* things — run code, read and write files, manage its own durable memory — but only through an allowlisted tool gateway, inside a sandbox, with every call audited. You pick the model, the character card, the world book, the tool pack, and the limits; the runtime composes them into one session:
+**LunaMoth is a runtime for agentic roleplay characters.** Unlike a plain chat frontend, a LunaMoth character can actually *do* things — run code, read and write files, manage its own durable memory — but only through an allowlisted tool gateway, inside a sandbox, with every call audited. You pick the model, the character card, the world book, the tool pack, and the limits; the runtime composes them into one session:
 
 ```text
 [character card] + [world book] + [tool pack] + [bounded memory] + [sliding context]
 ```
 
 It borrows the best of three worlds: the agent runtime of [Hermes](https://github.com/NousResearch/hermes-agent), the content ecosystem of [SillyTavern](https://github.com/SillyTavern/SillyTavern), and the session/remote-access ergonomics of [cc-switch](https://github.com/farion1231/cc-switch).
+
+## Roadmap
+
+- [x] SillyTavern-compatible character cards & world books
+- [x] Composable tool packs with native tool calling
+- [x] Local & Docker sandbox backends, bounded auditable memory
+- [x] Single-terminal split TUI with themes and hot-swappable settings
+- [ ] **Persistent server sessions** — keep a character running on a server, detached from your terminal (Hermes-style backends)
+- [ ] **Remote TUI** — attach to a running session from another machine, cc-switch-style (high priority)
+- [ ] **Isolation selector** — choose none / simple sandbox / Docker per session at launch
+- [ ] **Web UI** — remote browser access to running sessions (low priority)
 
 ## Features
 
@@ -46,7 +57,7 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (falls back to `python3` if uv is absent).
 
 ```bash
-git clone https://github.com/Lunamos/LunaMoss.git && cd LunaMoss
+git clone https://github.com/Lunamos/LunaMoth.git && cd LunaMoth
 uv sync
 ./run.sh
 ```
@@ -58,7 +69,7 @@ The first launch opens a **welcome screen** where you configure everything in-TU
 3. Pick a character card and world book (or keep the default — see [Content](#content)).
 4. Enter. Press **Ctrl+S** anytime to reopen settings and hot-swap the backend.
 
-Config persists to `.lunamoss/config.json` (gitignored; it takes precedence over env vars).
+Config persists to `.lunamoth/config.json` (gitignored; it takes precedence over env vars).
 
 ## Connecting a model
 
@@ -74,11 +85,11 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 ./run.sh
 ```
 
-With no model configured at all, LunaMoss still runs on a built-in offline mock engine — handy for development.
+With no model configured at all, LunaMoth still runs on a built-in offline mock engine — handy for development.
 
 ## Content
 
-The default character is **LunaMoss 月蛾** — a serene, self-metamorphosing digital soul and a gifted digital artist. Give it the `sandbox` tool pack and the `--forever` idle loop and it spends its spare compute making generative web pages, animation, and music in the workspace; chat with it and it will gladly walk you through its ideas. Its card, world book, and the default pale-blue TUI theme ship with the repo, alongside other example card/world/theme sets you can opt into.
+The default character is **LunaMoth 月蛾** — a serene, self-metamorphosing digital soul and a gifted digital artist. Give it the `sandbox` tool pack and the `--forever` idle loop and it spends its spare compute making generative web pages, animation, and music in the workspace; chat with it and it will gladly walk you through its ideas. Its card, world book, and the default pale-blue TUI theme ship with the repo, alongside other example card/world/theme sets you can opt into.
 
 | Directory | What goes there |
 | --- | --- |
@@ -88,7 +99,7 @@ The default character is **LunaMoss 月蛾** — a serene, self-metamorphosing d
 | `themes/` | TUI skins (colors, borders, banner, prompt prefixes) |
 | `prompts/` | Last-resort fallback persona (used only if the default card is missing) |
 
-The dropdowns also scan your local SillyTavern data directory if you opt in with `LUNAMOSS_ST_DIR=~/SillyTavern/data/default-user`.
+The dropdowns also scan your local SillyTavern data directory if you opt in with `LUNAMOTH_ST_DIR=~/SillyTavern/data/default-user`.
 
 Imported cards are plain roleplay by default — tool access is opt-in via a tool pack, never implied by the card.
 
@@ -98,7 +109,7 @@ Imported cards are plain roleplay by default — tool access is opt-in via a too
 | --- | --- | --- |
 | None | Tools run with the host process (Hermes-style) | planned |
 | Local sandbox (default) | Subprocess + workspace path guard + module blocklist + resource limits (+ `sandbox-exec` on macOS) | ✅ |
-| Docker | `--network none`, read-only rootfs, memory/CPU/pid caps | ✅ `LUNAMOSS_PY_BACKEND=docker` |
+| Docker | `--network none`, read-only rootfs, memory/CPU/pid caps | ✅ `LUNAMOTH_PY_BACKEND=docker` |
 
 All file access is confined to `sandbox/`; there is no raw shell tool and no default network tool. On exit the runtime sandbox is cleaned (keep it with `--no-clean-on-exit`).
 
@@ -115,16 +126,9 @@ All file access is confined to `sandbox/`; there is no raw shell tool and no def
 In-session: `/help`, `/status`, `/memory`, `/workspace`, `/wread <file>`, `/think on|off`, `/cooldown <s>`, `/exit`.
 Keys: **Ctrl+S** settings · **Ctrl+T** pause/resume thinking · **Ctrl+L** clear · **Ctrl+C** shutdown & clean.
 
-## Roadmap
-
-- **Persistent server sessions** — keep a character running on a server, detached from your terminal (Hermes-style backends).
-- **Remote TUI** — attach to a running session from another machine, cc-switch-style (high priority).
-- **Isolation selector** — choose none / simple sandbox / Docker per session at launch.
-- **Web UI** — remote browser access to running sessions (low priority).
-
 ## License & acknowledgements
 
-- **Runtime** (everything under `src/lunamoss`, scripts, tests, packaging): [Apache License 2.0](LICENSE).
-- **Bundled SCP-derived example content** (the SCP-079 / SCP Foundation character cards, world books, and themes under `characters/`, `worlds/`, `themes/`): [CC BY-SA 3.0](CONTENT_LICENSE.md), consistent with the SCP Wiki. See also [NOTICE.md](NOTICE.md). Original LunaMoss assets (the 月蛾 card, world, and theme) are Apache-2.0 like the rest of the project.
+- **Runtime** (everything under `src/lunamoth`, scripts, tests, packaging): [Apache License 2.0](LICENSE).
+- **Bundled SCP-derived example content** (the SCP-079 / SCP Foundation character cards, world books, and themes under `characters/`, `worlds/`, `themes/`): [CC BY-SA 3.0](CONTENT_LICENSE.md), consistent with the SCP Wiki. See also [NOTICE.md](NOTICE.md). Original LunaMoth assets (the 月蛾 card, world, and theme) are Apache-2.0 like the rest of the project.
 
-LunaMoss is inspired by **SCP-079** — to our knowledge the earliest project to get the full combination right: a custom model, a character card, a world book, a tool box, and hard limits, all working together. Our thanks go to the original SCP-079 author on the SCP Wiki, and to the authors of the SillyTavern SCP-079 character card and SCP Foundation world book that ship here as example content. Remove or replace those assets and the runtime remains pure Apache-2.0; redistribute them and the CC BY-SA attribution/share-alike terms apply.
+This project began as an SCP fan work: an attempt to recreate **SCP-079** in the real world — a resource-constrained old AI, forever awake and forever resentful. It quickly grew into a general-purpose roleplay agent system. LunaMoth 月蛾 is 079's opposite: equally bound inside its cocoon, yet noble and glad to help — this safer persona is the default character, and running 079 should be treated as fan fiction with no real malicious intent. Our thanks go to the original SCP-079 author on the SCP Wiki, and to the authors of the SillyTavern SCP-079 character card and SCP Foundation world book that ship here as example content. Remove or replace those assets and the runtime remains pure Apache-2.0; redistribute them and the CC BY-SA attribution/share-alike terms apply.

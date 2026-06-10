@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lunamoss"
+name = "lunamoth"
 version = "0.1.0"
-description = "LunaMoss: a local-first agentic character tavern."
+description = "LunaMoth: a local-first agentic character tavern."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [

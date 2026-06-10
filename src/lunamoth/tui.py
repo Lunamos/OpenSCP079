@@ -25,7 +25,7 @@ SLASH_COMMANDS = [
     "/forever on", "/forever off", "/cooldown", "/theme", "/settings", "/clear", "/exit",
 ]
 
-from .agent import LunaMossAgent, Session
+from .agent import LunaMothAgent, Session
 from .cleanup import clean_runtime_sandbox
 from .config import ROOT
 from .llm import LLMClient
@@ -35,8 +35,8 @@ from .themes import TuiTheme, load_theme
 
 def _st_dir() -> Path | None:
     # External scanning is OPT-IN. By default we only look inside the project folder
-    # (no links outside it). Set LUNAMOSS_ST_DIR to also scan a SillyTavern data dir.
-    d = os.getenv("LUNAMOSS_ST_DIR", os.getenv("SCP079_ST_DIR", "")).strip()
+    # (no links outside it). Set LUNAMOTH_ST_DIR to also scan a SillyTavern data dir.
+    d = os.getenv("LUNAMOTH_ST_DIR", os.getenv("LUNAMOSS_ST_DIR", "")).strip()
     if not d:
         return None
     p = Path(d).expanduser()
@@ -149,7 +149,7 @@ class WelcomeScreen(Screen):
             yield Static(self.skin.subtitle, id="title")
             yield Static(
                 "Configure the language model + persona + look, then enter containment.\n"
-                "Settings persist to .lunamoss/config.json (gitignored).",
+                "Settings persist to .lunamoth/config.json (gitignored).",
                 id="lore",
             )
             yield Label("Provider preset", classes="field-label")
@@ -172,7 +172,7 @@ class WelcomeScreen(Screen):
             worlds = _discover("worlds", (".json",))
             yield Label("Character card (persona)", classes="field-label")
             yield Select(
-                _picker_options(chars, self.draft.character_path, "(default · LunaMoss 月蛾)"),
+                _picker_options(chars, self.draft.character_path, "(default · LunaMoth 月蛾)"),
                 value=self.draft.character_path or "",
                 allow_blank=False,
                 id="character",
@@ -201,7 +201,7 @@ class WelcomeScreen(Screen):
             themes = _discover("themes", (".json",))
             yield Label("TUI theme (cosmetic skin)", classes="field-label")
             yield Select(
-                _picker_options(themes, self.draft.tui_theme_path, "(default · LunaMoss 月蛾)"),
+                _picker_options(themes, self.draft.tui_theme_path, "(default · LunaMoth 月蛾)"),
                 value=self.draft.tui_theme_path or "",
                 allow_blank=False,
                 id="theme",
@@ -325,7 +325,7 @@ class WelcomeScreen(Screen):
         self.query_one("#conn_status", Static).update(f"[{color}]{mark} {msg}[/]")
 
 
-class LunaMossTUI(App):
+class LunaMothTUI(App):
     CSS = """
     Screen {
         background: #050505;
@@ -416,7 +416,7 @@ class LunaMossTUI(App):
         self.forever = forever
         self.settings = load_settings()
         self.skin = load_theme(self.settings.tui_theme_path)
-        self.agent = LunaMossAgent(self.settings)
+        self.agent = LunaMothAgent(self.settings)
         self.session = self.agent.make_session()
         self.output: queue.Queue[tuple[str, str]] = queue.Queue()
         self.current_thread: threading.Thread | None = None
@@ -897,7 +897,7 @@ class LunaMossTUI(App):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="LunaMoss single-terminal TUI")
+    parser = argparse.ArgumentParser(description="LunaMoth single-terminal TUI")
     parser.add_argument("--cooldown", type=float, default=2.0)
     # `forever` = eternal self-talk loop, OFF by default; --forever opts in at boot.
     # --think/--no-think kept as harmless aliases for muscle memory / existing scripts.
@@ -906,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-think", action="store_true")
     parser.add_argument("--no-clean-on-exit", action="store_true")
     args = parser.parse_args(argv)
-    app = LunaMossTUI(
+    app = LunaMothTUI(
         cooldown=args.cooldown,
         clean_on_exit=not args.no_clean_on_exit,
         forever=args.forever or args.think,
@@ -920,4 +920,4 @@ if __name__ == "__main__":
 
 
 # Backward-compatible alias for older imports.
-OpenSCP079TUI = LunaMossTUI
+OpenSCP079TUI = LunaMothTUI

@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from .agent import LunaMossAgent, Session
+from .agent import LunaMothAgent, Session
 from .config import ThoughtConfig
 from .cleanup import clean_runtime_sandbox
 
@@ -19,7 +19,7 @@ BANNER = r'''
 ██║     ██║   ██║██║     ██╔══██║██║           ████╔╝██║   ██╔╝ ██╔══██╗
 ███████╗╚██████╔╝╚██████╗██║  ██║███████╗      ╚██████╔╝   ██║  ╚█████╔╝
 ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝       ╚═════╝    ╚═╝   ╚════╝ 
-LUNAMOSS // LOCAL AGENTIC CHARACTER RUNTIME
+LUNAMOTH // LOCAL AGENTIC CHARACTER RUNTIME
 Human input interrupts the display stream. /help for commands. Ctrl-C to cut power.
 '''
 
@@ -112,7 +112,7 @@ def _cooldown(seconds: float) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description='LunaMoss terminal containment display')
+    parser = argparse.ArgumentParser(description='LunaMoth terminal containment display')
     parser.add_argument('--no-think', action='store_true', help='disable eternal visible thought cycles')
     parser.add_argument('--cooldown', type=float, default=0.5, help='seconds to pause after each thought/user reply before forced restart')
     parser.add_argument('--no-stream', action='store_true', help='use non-streaming fallback output')
@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = ThoughtConfig()
     state = TerminalState(eternal=not args.no_think and cfg.enabled_default)
     cooldown = float(args.cooldown)
-    agent = LunaMossAgent()
+    agent = LunaMothAgent()
     session = agent.make_session()
 
     print(BANNER)

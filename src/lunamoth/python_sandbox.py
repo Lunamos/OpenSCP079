@@ -10,7 +10,7 @@ from pathlib import Path
 
 def _run_docker_python(code: str, workspace: Path, timeout: float, memory_mb: int) -> str | None:
     docker = shutil.which("docker")
-    if not docker or os.environ.get("LUNAMOSS_PY_BACKEND", os.environ.get("SCP079_PY_BACKEND", "local")) != "docker":
+    if not docker or os.environ.get("LUNAMOTH_PY_BACKEND", os.environ.get("LUNAMOSS_PY_BACKEND", "local")) != "docker":
         return None
     workspace.mkdir(parents=True, exist_ok=True)
     script = workspace / ".079_exec.py"
@@ -44,7 +44,7 @@ def _run_docker_python(code: str, workspace: Path, timeout: float, memory_mb: in
 
 GUARD = r'''
 import builtins, os, pathlib, sys
-ROOT = pathlib.Path(os.environ.get("LUNAMOSS_PY_ROOT", ".")).resolve()
+ROOT = pathlib.Path(os.environ.get("LUNAMOTH_PY_ROOT", ".")).resolve()
 
 # Purge modules that are too useful for escape/network/process attempts in this toy sandbox.
 for _m in [
@@ -121,7 +121,7 @@ os.chdir = guarded_chdir
 
 
 def _macos_sandbox_command(script: Path, workspace: Path) -> list[str] | None:
-    if os.environ.get("LUNAMOSS_USE_MACOS_SANDBOX", os.environ.get("SCP079_USE_MACOS_SANDBOX", "0")) not in {"1", "true", "yes"}:
+    if os.environ.get("LUNAMOTH_USE_MACOS_SANDBOX", os.environ.get("LUNAMOSS_USE_MACOS_SANDBOX", "0")) not in {"1", "true", "yes"}:
         return None
     sandbox_exec = shutil.which("sandbox-exec")
     if not sandbox_exec:
@@ -152,7 +152,7 @@ def run_limited_python(code: str, workspace: Path, timeout: float = 2.0, memory_
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "PYTHONNOUSERSITE": "1",
-        "LUNAMOSS_PY_ROOT": str(workspace.resolve()),
+        "LUNAMOTH_PY_ROOT": str(workspace.resolve()),
     }
 
     def limit_resources():

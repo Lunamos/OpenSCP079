@@ -59,7 +59,7 @@ class LLMClient:
         # OpenRouter recommends these; harmless elsewhere.
         if "openrouter.ai" in self.cfg.base_url:
             headers["HTTP-Referer"] = "https://github.com/Lunamos/OpenSCP079"
-            headers["X-Title"] = "LunaMoss"
+            headers["X-Title"] = "LunaMoth"
         return headers
 
     def test_connection(self, timeout: float = 20.0) -> tuple[bool, str]:

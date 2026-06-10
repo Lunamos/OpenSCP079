@@ -40,7 +40,7 @@ class GitHubMemoryStore:
         raw = base64.b64decode(payload["content"]).decode("utf-8")
         return json.loads(raw), payload.get("sha")
 
-    def save(self, data: dict[str, Any], message: str = "LunaMoss memory update") -> None:
+    def save(self, data: dict[str, Any], message: str = "LunaMoth memory update") -> None:
         if not self.ready:
             return
         _, sha = self.load()

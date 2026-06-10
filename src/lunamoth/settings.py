@@ -11,7 +11,13 @@ from .config import ROOT, LLMConfig
 
 # Runtime config lives in the project, NOT inside the sandbox (the sandbox is
 # zeroed on shutdown). It is gitignored so API keys never enter version control.
-CONFIG_DIR = Path(os.getenv("LUNAMOSS_CONFIG_DIR", os.getenv("SCP079_CONFIG_DIR", ROOT / ".lunamoss"))).resolve()
+def _default_config_dir() -> Path:
+    new, old = ROOT / ".lunamoth", ROOT / ".lunamoss"
+    # Keep reading a pre-rename config dir until a new one is created.
+    return old if old.is_dir() and not new.is_dir() else new
+
+
+CONFIG_DIR = Path(os.getenv("LUNAMOTH_CONFIG_DIR", os.getenv("LUNAMOSS_CONFIG_DIR", _default_config_dir()))).resolve()
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
@@ -47,7 +53,7 @@ class Settings:
     context_tokens: int = 0
     memory_chars: int = 0
     memory_tokens: int = 0
-    # TUI theme card (cosmetic skin: banner/colors/decoration). Empty => built-in LunaMoss theme.
+    # TUI theme card (cosmetic skin: banner/colors/decoration). Empty => built-in LunaMoth theme.
     tui_theme_path: str = ""
 
     def is_live(self) -> bool:
@@ -102,16 +108,16 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "model": ("OPENAI_MODEL",),
     "temperature": ("LLM_TEMPERATURE",),
     "max_tokens": ("LLM_MAX_TOKENS",),
-    "lang": ("LUNAMOSS_LANG", "SCP079_LANG"),
-    "py_backend": ("LUNAMOSS_PY_BACKEND", "SCP079_PY_BACKEND"),
-    "character_path": ("LUNAMOSS_CHARACTER", "SCP079_CHARACTER"),
-    "world_path": ("LUNAMOSS_WORLD", "SCP079_WORLD"),
-    "user_name": ("LUNAMOSS_USER", "SCP079_USER"),
-    "tui_theme_path": ("LUNAMOSS_THEME", "SCP079_THEME"),
-    "toolpack": ("LUNAMOSS_TOOLPACK", "SCP079_TOOLPACK"),
-    "context_tokens": ("LUNAMOSS_CONTEXT_TOKENS", "SCP079_CONTEXT_TOKENS"),
-    "memory_chars": ("LUNAMOSS_MEMORY_CHARS", "SCP079_MEMORY_CHARS"),
-    "memory_tokens": ("LUNAMOSS_MEMORY_TOKENS", "SCP079_MEMORY_TOKENS"),
+    "lang": ("LUNAMOTH_LANG", "LUNAMOSS_LANG"),
+    "py_backend": ("LUNAMOTH_PY_BACKEND", "LUNAMOSS_PY_BACKEND"),
+    "character_path": ("LUNAMOTH_CHARACTER", "LUNAMOSS_CHARACTER"),
+    "world_path": ("LUNAMOTH_WORLD", "LUNAMOSS_WORLD"),
+    "user_name": ("LUNAMOTH_USER", "LUNAMOSS_USER"),
+    "tui_theme_path": ("LUNAMOTH_THEME", "LUNAMOSS_THEME"),
+    "toolpack": ("LUNAMOTH_TOOLPACK", "LUNAMOSS_TOOLPACK"),
+    "context_tokens": ("LUNAMOTH_CONTEXT_TOKENS", "LUNAMOSS_CONTEXT_TOKENS"),
+    "memory_chars": ("LUNAMOTH_MEMORY_CHARS", "LUNAMOSS_MEMORY_CHARS"),
+    "memory_tokens": ("LUNAMOTH_MEMORY_TOKENS", "LUNAMOSS_MEMORY_TOKENS"),
 }
 
 _INT_FIELDS = {"max_tokens", "context_tokens", "memory_chars", "memory_tokens"}

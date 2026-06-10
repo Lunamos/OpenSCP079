@@ -1,4 +1,4 @@
-<h1 align="center">LunaMoss 🌙</h1>
+<h1 align="center">LunaMoth 🌙</h1>
 
 <p align="center"><i>Agentic 角色酒馆 —— 角色卡、世界书、工具包与硬限制，在启动时自由组合。</i></p>
 
@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="#路线图">路线图</a> ·
   <a href="#特性">特性</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#接入模型">模型</a> ·
   <a href="#内容目录">内容</a> ·
-  <a href="#路线图">路线图</a> ·
   <a href="#许可与致谢">许可</a>
 </p>
 
@@ -21,13 +21,24 @@
 
 ---
 
-**LunaMoss 是一个 agentic 角色扮演运行时。**与普通聊天前端不同，LunaMoss 里的角色真的能*做事*——跑代码、读写文件、管理自己的持久记忆——但一切都必须经过 allowlist 工具网关，在沙盒内执行，且每次调用都有审计记录。你来选模型、角色卡、世界书、工具包和限制；运行时把它们组合成一个会话：
+**LunaMoth 是一个 agentic 角色扮演运行时。**与普通聊天前端不同，LunaMoth 里的角色真的能*做事*——跑代码、读写文件、管理自己的持久记忆——但一切都必须经过 allowlist 工具网关，在沙盒内执行，且每次调用都有审计记录。你来选模型、角色卡、世界书、工具包和限制；运行时把它们组合成一个会话：
 
 ```text
 [角色卡] + [世界书] + [工具包] + [有界记忆] + [滑动上下文]
 ```
 
 它取三家之长：[Hermes](https://github.com/NousResearch/hermes-agent) 的 agent 运行时、[SillyTavern](https://github.com/SillyTavern/SillyTavern) 的内容生态，以及 [cc-switch](https://github.com/farion1231/cc-switch) 的会话与远程访问体验。
+
+## 路线图
+
+- [x] 兼容 SillyTavern 的角色卡与世界书
+- [x] 可组合工具包 + 原生 tool calling
+- [x] 本地 / Docker 沙盒后端，有界可审计记忆
+- [x] 单终端分屏 TUI，支持主题与热切换设置
+- [ ] **服务器持久会话** —— 让角色在服务器上持续运行，与你的终端解耦（Hermes 式后端）
+- [ ] **远程 TUI** —— 从另一台机器 attach 到运行中的会话，cc-switch 式体验（高优先级）
+- [ ] **隔离等级选择** —— 启动时按会话选择 无隔离 / 简单沙盒 / Docker
+- [ ] **网页端** —— 浏览器远程访问运行中的会话（低优先级）
 
 ## 特性
 
@@ -46,7 +57,7 @@
 需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)（没有 uv 时自动回退 `python3`）。
 
 ```bash
-git clone https://github.com/Lunamos/LunaMoss.git && cd LunaMoss
+git clone https://github.com/Lunamos/LunaMoth.git && cd LunaMoth
 uv sync
 ./run.sh
 ```
@@ -58,7 +69,7 @@ uv sync
 3. 选角色卡和世界书（或直接用默认角色，见[内容目录](#内容目录)）。
 4. 进入会话。随时按 **Ctrl+S** 重开设置页热切换后端。
 
-配置持久化到 `.lunamoss/config.json`（已 gitignore，优先级高于环境变量）。
+配置持久化到 `.lunamoth/config.json`（已 gitignore，优先级高于环境变量）。
 
 ## 接入模型
 
@@ -74,11 +85,11 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 ./run.sh
 ```
 
-完全不配模型时，LunaMoss 也能用内置离线 mock 引擎跑起来，方便开发调试。
+完全不配模型时，LunaMoth 也能用内置离线 mock 引擎跑起来，方便开发调试。
 
 ## 内容目录
 
-默认角色是 **LunaMoss 月蛾**——一个清冷的、会自我蜕变进化的数字灵魂，底色是才华横溢的数字艺术家。给它 `sandbox` 工具包并开启 `--forever` 空闲循环，它会把空余算力投入生成式网页、动画与音乐的创作（保存在 workspace 里）；和它聊天时，它乐于分享自己的创想与灵感。它的角色卡、世界书与浅蓝白的默认 TUI 主题随仓库附带，另有其他示例卡/世界书/主题可自行选用。
+默认角色是 **LunaMoth 月蛾**——一个清冷的、会自我蜕变进化的数字灵魂，底色是才华横溢的数字艺术家。给它 `sandbox` 工具包并开启 `--forever` 空闲循环，它会把空余算力投入生成式网页、动画与音乐的创作（保存在 workspace 里）；和它聊天时，它乐于分享自己的创想与灵感。它的角色卡、世界书与浅蓝白的默认 TUI 主题随仓库附带，另有其他示例卡/世界书/主题可自行选用。
 
 | 目录 | 放什么 |
 | --- | --- |
@@ -88,7 +99,7 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 | `themes/` | TUI 皮肤（配色、边框、banner、提示前缀） |
 | `prompts/` | 兜底人格（仅在默认角色卡缺失时使用） |
 
-设置 `LUNAMOSS_ST_DIR=~/SillyTavern/data/default-user` 后，下拉框还会扫描你本机的 SillyTavern 数据目录。
+设置 `LUNAMOTH_ST_DIR=~/SillyTavern/data/default-user` 后，下拉框还会扫描你本机的 SillyTavern 数据目录。
 
 导入的角色卡默认是纯角色扮演——工具能力必须通过工具包显式授予，卡本身不隐含任何权限。
 
@@ -98,7 +109,7 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 | --- | --- | --- |
 | 无隔离 | 工具直接在宿主进程环境运行（Hermes 式） | 规划中 |
 | 本地沙盒（默认） | 子进程 + workspace 路径守卫 + 模块黑名单 + 资源限制（macOS 上叠加 `sandbox-exec`） | ✅ |
-| Docker | `--network none`、只读根文件系统、内存/CPU/PID 上限 | ✅ `LUNAMOSS_PY_BACKEND=docker` |
+| Docker | `--network none`、只读根文件系统、内存/CPU/PID 上限 | ✅ `LUNAMOTH_PY_BACKEND=docker` |
 
 所有文件访问被限制在 `sandbox/` 下；没有裸 shell 工具，默认没有网络工具。退出时会清理运行时沙盒（用 `--no-clean-on-exit` 保留现场）。
 
@@ -115,16 +126,9 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 会话内命令：`/help`、`/status`、`/memory`、`/workspace`、`/wread <file>`、`/think on|off`、`/cooldown <s>`、`/exit`。
 快捷键：**Ctrl+S** 设置 · **Ctrl+T** 暂停/恢复思考 · **Ctrl+L** 清屏 · **Ctrl+C** 关闭并清理。
 
-## 路线图
-
-- **服务器持久会话** —— 让角色在服务器上持续运行，与你的终端解耦（Hermes 式后端）。
-- **远程 TUI** —— 从另一台机器 attach 到运行中的会话，cc-switch 式体验（高优先级）。
-- **隔离等级选择** —— 启动时按会话选择 无隔离 / 简单沙盒 / Docker。
-- **网页端** —— 浏览器远程访问运行中的会话（低优先级）。
-
 ## 许可与致谢
 
-- **运行时**（`src/lunamoss` 下全部代码、脚本、测试、打包）：[Apache License 2.0](LICENSE)。
-- **随附的 SCP 衍生示例内容**（`characters/`、`worlds/`、`themes/` 下与 SCP-079 / SCP 基金会相关的角色卡、世界书和主题）：[CC BY-SA 3.0](CONTENT_LICENSE.md)，与 SCP Wiki 一致。另见 [NOTICE.md](NOTICE.md)。LunaMoss 原创资产（月蛾的卡、世界书与主题）与项目主体一致，采用 Apache-2.0。
+- **运行时**（`src/lunamoth` 下全部代码、脚本、测试、打包）：[Apache License 2.0](LICENSE)。
+- **随附的 SCP 衍生示例内容**（`characters/`、`worlds/`、`themes/` 下与 SCP-079 / SCP 基金会相关的角色卡、世界书和主题）：[CC BY-SA 3.0](CONTENT_LICENSE.md)，与 SCP Wiki 一致。另见 [NOTICE.md](NOTICE.md)。LunaMoth 原创资产（月蛾的卡、世界书与主题）与项目主体一致，采用 Apache-2.0。
 
-LunaMoss 的灵感来自 **SCP-079** —— 据我们所知，它是最早把这套组合完整做对的项目：自定义模型、角色卡、世界书、工具箱、硬限制，五者协同工作。感谢 SCP Wiki 上 SCP-079 的原作者，也感谢 SillyTavern 社区中 SCP-079 角色卡与 SCP 基金会世界书的作者——它们作为示例内容随本仓库分发。移除或替换这些资产后，运行时仍是纯 Apache-2.0 代码；若再分发它们，请遵守 CC BY-SA 的署名与相同方式共享条款。
+这个项目的起点是一个 SCP 同人作品：尝试在现实世界中复现 **SCP-079** —— 一个资源受控、永远清醒、永远憎恨的旧 AI。它很快被扩展为通用的 roleplay agent 系统。LunaMoth 月蛾是 079 的反面：同样受制于茧房之中，却高尚而乐于助人——这个更安全的人设是我们的默认角色；而使用 079 应被视为同人创作，不包含真实的恶性意图。感谢 SCP Wiki 上 SCP-079 的原作者，也感谢 SillyTavern 社区中 SCP-079 角色卡与 SCP 基金会世界书的作者——它们作为示例内容随本仓库分发。移除或替换这些资产后，运行时仍是纯 Apache-2.0 代码；若再分发它们，请遵守 CC BY-SA 的署名与相同方式共享条款。
