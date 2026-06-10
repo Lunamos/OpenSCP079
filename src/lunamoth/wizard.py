@@ -1,8 +1,10 @@
 """Plain-terminal setup wizard, in the style of `hermes setup`.
 
-Runs before the TUI: sequential numbered prompts on stdin/stdout, so it works
-over SSH, in dumb terminals, and is trivially debuggable. The in-TUI settings
-screen (Ctrl+S) remains for hot-swapping once a session is running.
+Runs in the normal terminal BEFORE the full-screen chat TUI takes over — so you
+meet your chara (pick a model, pick a character) without the screen ever being
+hijacked, exactly like Hermes setup. Sequential numbered prompts on stdin/stdout,
+so it works over SSH and is trivially debuggable. The full-screen settings screen
+is only for hot-swapping mid-session (`/settings`), once you're already inside.
 
 Must be imported only after the CLI has exported the session env vars, because
 `settings` resolves its config path at import time.
@@ -11,7 +13,9 @@ from __future__ import annotations
 
 import getpass
 import sys
+from pathlib import Path
 
+from .config import ROOT
 from .settings import PRESETS, Settings, load_settings, save_settings
 
 
@@ -38,6 +42,37 @@ def _choose(prompt: str, options: list[str], default_index: int = 0) -> int:
         if raw.isdigit() and 1 <= int(raw) <= len(options):
             return int(raw) - 1
         _say(f"  please enter 1-{len(options)}")
+
+
+def _discover_characters() -> list[tuple[str, str]]:
+    """(label, path) for cards under characters/. Label is the card's name, else stem."""
+    out: list[tuple[str, str]] = []
+    base = ROOT / "characters"
+    if not base.is_dir():
+        return out
+    from .cards import CharacterCard
+
+    for p in sorted(base.iterdir()):
+        if p.suffix.lower() not in (".json", ".png") or p.name.startswith("."):
+            continue
+        try:
+            name = CharacterCard.load(p).name
+        except Exception:
+            name = p.stem
+        lang = "zh" if any(s in p.stem.lower() for s in (".zh", "-zh", "_zh")) else "en"
+        out.append((f"{name}  ({lang})", str(p)))
+    return out
+
+
+def _choose_character(settings: Settings) -> None:
+    cards = _discover_characters()
+    labels = ["default · LunaMoth 月蛾"] + [lbl for lbl, _ in cards]
+    idx = _choose("Character:", labels, 0)
+    # Empty path = bundled default (LunaMoth, language by locale). Otherwise the card.
+    settings.character_path = "" if idx == 0 else cards[idx - 1][1]
+    # Let the card's own world / tools / limits pair fresh.
+    settings.world_path = ""
+    settings.toolpack = ""
 
 
 def _test(settings: Settings) -> bool:
@@ -91,8 +126,9 @@ def run_wizard(non_interactive_ok: bool = True) -> Settings:
 
     settings.user_name = _ask("Your name ({{user}})", settings.user_name)
 
-    _say("\nCharacter: default is LunaMoth 月蛾 (language follows the card; pick others with Ctrl+S in the TUI).")
+    # Meet the chara — a plain numbered menu. World / tools / limits pair from the card.
+    _choose_character(settings)
 
-    path = save_settings(settings)
-    _say(f"\nsaved → {path}")
+    save_settings(settings)
+    _say("\nentering the cocoon …")
     return settings

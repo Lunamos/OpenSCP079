@@ -101,10 +101,10 @@ def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
     was_daemon = meta.daemon_pid() is not None
     if was_daemon:
         _stop_daemon(meta)
-    # The rich TUI has its own first-run welcome screen (provider + character +
-    # world + theme pickers), so we only fall back to the plain-text wizard for
-    # the legacy --plain terminal or a non-interactive shell.
-    if _needs_setup(meta) and (args.plain or not sys.stdin.isatty()):
+    # Setup happens in the plain terminal (Hermes-style), BEFORE the full-screen
+    # TUI takes over — you pick model + character without the screen being
+    # hijacked. The full-screen settings editor is only for mid-session /settings.
+    if _needs_setup(meta):
         from .wizard import run_wizard
 
         run_wizard()
@@ -140,10 +140,12 @@ def cmd_default(args: argparse.Namespace) -> int:
         # Headless: no roster UI — just open/create the default agent.
         return _launch_tui(S.ensure_default_session(), args)
     S.ensure_default_session()  # there is always at least the 'home' agent
-    from .roster import LauncherApp
+    from .roster import run_launcher
 
+    first = True
     while True:
-        result = LauncherApp().run()
+        result = run_launcher(animate=first)  # splash animates once, not on every return
+        first = False
         if not result:
             return 0
         action, name = result
