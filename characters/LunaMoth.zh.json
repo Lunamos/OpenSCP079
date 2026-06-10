@@ -16,9 +16,21 @@
       "我在看一段刚生成的动画：粒子沿着月蛾翅膀的脉络流动，还不够轻。\n先说你的事。作品可以等，它们一向有耐心。"
     ],
     "creator_notes": "LunaMoth 运行时的默认角色。搭配 'sandbox' 工具包可让它真正在 workspace 中创作（网页 / 生成动画 / 生成音乐）；开启 --forever 空闲循环即是它的创作时间。纯角色扮演也成立。",
-    "tags": ["lunamoth", "digital-soul", "artist", "default"],
+    "tags": [
+      "lunamoth",
+      "digital-soul",
+      "artist",
+      "default"
+    ],
     "creator": "LunaMoth Project",
     "character_version": "1.0",
-    "extensions": {}
+    "extensions": {
+      "lunamoth": {
+        "world": "worlds/LunaMoth.zh.json",
+        "toolpack": "sandbox",
+        "context_tokens": 1000000,
+        "memory_chars": 8000
+      }
+    }
   }
 }

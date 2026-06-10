@@ -5,7 +5,7 @@ import random
 from typing import Any, Callable, Iterator
 
 from .config import LLMConfig
-from .persona import load_persona, load_tool_spec
+from .persona import fallback_persona
 
 
 LIVE_PROVIDERS = {"openai_compatible", "openai", "ollama", "openrouter"}
@@ -40,11 +40,10 @@ class LLMClient:
             scan_text = "\n".join(content for _, content in context) + "\n" + user_text
             messages = [{"role": "system", "content": m} for m in self.system_provider(scan_text) if m and m.strip()]
         else:
-            messages = [
-                {"role": "system", "content": load_persona()},
-                {"role": "system", "content": load_tool_spec()},
-                {"role": "system", "content": f"CONTAINMENT_STATUS_JSON:\n{json.dumps(status, ensure_ascii=False)}\n\nLOADED_LIMITED_MEMORY_TEXT:\n{memory}"},
-            ]
+            # Only hit when no system_provider is wired (bare client). Keep it neutral.
+            messages = [{"role": "system", "content": fallback_persona()}]
+            if memory.strip():
+                messages.append({"role": "system", "content": f"Your saved memory:\n{memory}"})
         for role, content in context:
             if role not in {"user", "assistant", "system"}:
                 role = "system"
@@ -58,7 +57,7 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.cfg.api_key}"
         # OpenRouter recommends these; harmless elsewhere.
         if "openrouter.ai" in self.cfg.base_url:
-            headers["HTTP-Referer"] = "https://github.com/Lunamos/OpenSCP079"
+            headers["HTTP-Referer"] = "https://github.com/Lunamos/LunaMoth"
             headers["X-Title"] = "LunaMoth"
         return headers
 

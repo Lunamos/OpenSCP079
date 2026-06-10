@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
+from pathlib import Path
 from typing import Any
 
 import json as _json
 
 from .audit import AuditLog
 from .cards import CharacterCard
-from .config import LLMConfig, SANDBOX_ROOT, ThoughtConfig
+from .config import LLMConfig, ROOT, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
 from .llm import LLMClient
 from .memory import MemoryLimits, MemoryStore
@@ -17,11 +18,11 @@ from .persona import (
     DEFAULT_NAME,
     default_character_path,
     default_world_path,
-    load_persona,
-    load_tool_spec,
+    fallback_persona,
+    system_language,
 )
 from .sandbox import Sandbox
-from .state import ContainmentState
+from .state import EnvState
 from .toolpacks import ToolPack, load_toolpack
 from .tools import ToolGateway
 from .worldinfo import Lorebook
@@ -53,10 +54,10 @@ class LunaMothAgent:
         from .settings import load_settings
 
         self.settings = settings or load_settings()
-        os.environ["LUNAMOTH_LANG"] = self.settings.lang
+        self.lang = system_language()  # derived from the active card in _load_cards()
         self.sandbox = Sandbox(SANDBOX_ROOT)
         self.audit = AuditLog(SANDBOX_ROOT / "logs" / "audit.jsonl")
-        self.state = ContainmentState(SANDBOX_ROOT / "containment_status.json")
+        self.state = EnvState(SANDBOX_ROOT / "env_status.json")
         self.character: CharacterCard | None = None
         self.world: Lorebook | None = None
         self.toolpack: "ToolPack | None" = None
@@ -72,8 +73,7 @@ class LunaMothAgent:
     def reconfigure(self, settings: "Settings") -> None:
         """Hot-swap the LLM backend, persona, tool pack and limits at runtime."""
         self.settings = settings
-        os.environ["LUNAMOTH_LANG"] = settings.lang
-        self._load_cards()
+        self._load_cards()  # also derives self.lang from the chosen card
         self.memory.limits = self._memory_limits()
         self._load_toolpack()
         self.llm = LLMClient(settings.to_llm_config(), self._build_system_messages)
@@ -91,12 +91,13 @@ class LunaMothAgent:
     # ---- persona / tool pack / limits (independent composable layers) -------------
 
     def _load_cards(self) -> None:
-        """Load the persona card + world book (the 'what it is' layer).
+        """Load the persona card + its paired world book.
 
         An empty character path means the bundled default character (LunaMoth
-        月蛾); its paired world book is auto-loaded too unless a world was
-        chosen explicitly. The generic prompts/ persona remains the fallback
-        when no card can be loaded at all.
+        月蛾). Language is taken from the chosen card (a .zh card speaks zh, a
+        .en card speaks en) — not from a separate toggle. The world book is
+        the card's declared default (extensions.lunamoth.world), then the
+        same-stem convention, unless the operator picked one explicitly.
         """
         self.character = None
         self.world = None
@@ -110,9 +111,19 @@ class LunaMothAgent:
                 self.character = CharacterCard.load(path)
             except Exception as e:
                 self.audit.write("character_load_error", path=path, error=str(e)[:300])
+
+        # Language follows the card — it is not a setting. Used only to pick the
+        # fallback persona / the default world for the bundled default character.
+        self.lang = self.character.language if self.character else system_language()
+
         wpath = (self.settings.world_path or "").strip()
+        if not wpath and self.character is not None:
+            declared = self.character.defaults().get("world")
+            if declared:
+                cand = (ROOT / declared) if not os.path.isabs(declared) else Path(declared)
+                wpath = str(cand) if cand.exists() else ""
         if not wpath and using_default_character and self.character is not None:
-            default_world = default_world_path()
+            default_world = default_world_path(self.lang)
             wpath = str(default_world) if default_world else ""
         if wpath:
             try:
@@ -121,45 +132,71 @@ class LunaMothAgent:
                 self.audit.write("world_load_error", path=wpath, error=str(e)[:300])
 
     def _load_toolpack(self) -> None:
-        """Load the tool pack (the 'what it can do' layer) and apply it to the gateway."""
+        """Load the tool pack (the 'what it can do' layer) and apply it to the gateway.
+
+        Empty toolpack setting falls back to the card's declared default, then to
+        the safe built-in 'sandbox' pack — so a plain SillyTavern card that
+        carries no tools/limits still gets a sensible, safe capability set.
+        """
         self.toolpack = None
+        choice = (self.settings.toolpack or "").strip()
+        if not choice and self.character is not None:
+            choice = str(self.character.defaults().get("toolpack", "")).strip()
+        if not choice:
+            choice = "sandbox"
         try:
-            self.toolpack = load_toolpack(self.settings.toolpack)
+            self.toolpack = load_toolpack(choice)
         except Exception as e:
-            self.audit.write("toolpack_load_error", path=self.settings.toolpack, error=str(e)[:300])
+            self.audit.write("toolpack_load_error", path=choice, error=str(e)[:300])
         self.tools.set_enabled(self.toolpack.tools if self.toolpack else None)
 
-    def _effective_limit(self, key: str, default: int) -> int:
-        """Resolve a limit (the independent 'limits' layer).
-
-        Precedence: explicit Overdrive in settings (>0) > card extensions > built-in default.
-        """
-        override = int(getattr(self.settings, key, 0) or 0)
-        if override > 0:
-            return override
-        if self.character:
-            v = self.character.extensions.get(key)
+    def _card_limit(self, key: str) -> int | None:
+        """A limit declared by the card, in extensions.lunamoth or top-level extensions."""
+        if not self.character:
+            return None
+        for source in (self.character.defaults(), self.character.extensions):
+            v = source.get(key)
             if isinstance(v, bool):
-                v = None
+                continue
             if isinstance(v, (int, float)) and v > 0:
                 return int(v)
             if isinstance(v, str) and v.strip().isdigit():
                 return int(v)
+        return None
+
+    def _effective_limit(self, key: str, default: int) -> int:
+        """Precedence: explicit Overdrive in settings (>0) > card default > built-in fallback."""
+        override = int(getattr(self.settings, key, 0) or 0)
+        if override > 0:
+            return override
+        card = self._card_limit(key)
+        if card is not None:
+            return card
         return default
 
     def _memory_limits(self) -> MemoryLimits:
         return MemoryLimits(
-            max_tokens=self._effective_limit("memory_tokens", 1024),
-            max_chars=self._effective_limit("memory_chars", 6000),
+            max_tokens=self._effective_limit("memory_tokens", 2048),
+            max_chars=self._effective_limit("memory_chars", 8000),
         )
 
+    # Wide fallback context window so task/world cards fit; cards may narrow it.
+    DEFAULT_CONTEXT_TOKENS = 1_000_000
+
     def context_limit(self) -> int:
-        return self._effective_limit("context_tokens", 65536)
+        return self._effective_limit("context_tokens", self.DEFAULT_CONTEXT_TOKENS)
 
     def make_session(self) -> "Session":
-        """Build a Session whose context window honors the active limits layer."""
+        """Build a Session whose context window honors the active limits layer.
+
+        The trim buffer (headroom reserved for the reply + tool round-trips) scales
+        with the window — up to ~100k on the wide default — so a big context doesn't
+        get filled to the brim before trimming kicks in.
+        """
         session = Session()
-        session.context.max_tokens = self.context_limit()
+        ctx = self.context_limit()
+        session.context.max_tokens = ctx
+        session.context.trim_buffer_tokens = min(100_000, max(4096, ctx // 8))
         return session
 
     def char_name(self) -> str:
@@ -183,15 +220,22 @@ class LunaMothAgent:
         if self.character is not None:
             msgs.append(self.character.render_system(self.settings.user_name))
         else:
-            msgs.append(load_persona())
+            msgs.append(fallback_persona(self.lang))
         if self._tools_active():
-            msgs.append(load_tool_spec())
+            # Native tool schemas already describe each tool, so we DON'T re-inject a
+            # prose tool spec (that was redundant and leaked SCP "containment" framing
+            # into every character). Just a short, neutral nudge + the live env facts.
+            net = "on" if status.get("network_access") else "off"
+            msgs.append(
+                "You have tools available via native function calling. Call them directly when "
+                "you want to act; never paste code in prose or claim a result before the tool returns.\n"
+                f"Environment: isolation={status.get('isolation', 'sandbox')}, network={net}, "
+                f"workspace is your read/write directory."
+            )
             if self.toolpack and self.toolpack.note.strip():
                 msgs.append(self.toolpack.note.strip())
-            msgs.append(
-                f"CONTAINMENT_STATUS_JSON:\n{_json.dumps(status, ensure_ascii=False)}\n\n"
-                f"LOADED_LIMITED_MEMORY_TEXT:\n{memory}"
-            )
+            if memory.strip():
+                msgs.append(f"Your saved memory:\n{memory}")
         # World info: card-embedded book + explicit standalone world book.
         world_blocks: list[str] = []
         char, user = self.char_name(), self.settings.user_name
@@ -255,8 +299,6 @@ class LunaMothAgent:
         reply = "".join(chunks).strip()
         session.context.add("user", text)
         session.context.add("assistant", reply)
-        if any(word in text.lower() for word in ["please", "thanks", "thank you"]) or any(w in text for w in ["谢谢", "请"]):
-            self.state.adjust(trust_delta=1, hostility_delta=-1)
 
     def _think_prompt(self, cycle: int) -> str:
         # Internal cycles are monologue. The model still has tools available and may
@@ -322,7 +364,7 @@ class LunaMothAgent:
         cmd = parts[0].lower()
         try:
             if cmd == "/status":
-                data = self.tools.call("inspect_cell")
+                data = self.tools.call("inspect_env")
                 data["context_tokens_est"] = session.context.token_count()
                 return self.tools.as_json(data)
             if cmd == "/memory":
@@ -359,6 +401,3 @@ class LunaMothAgent:
             return f"command failed: {e}"
         return "unknown command. try /help"
 
-
-# Backward-compatible alias for older imports.
-SCP079Agent = LunaMothAgent

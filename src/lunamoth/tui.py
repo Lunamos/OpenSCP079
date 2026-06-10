@@ -149,8 +149,8 @@ class WelcomeScreen(Screen):
             yield Static(self.skin.banner, id="banner")
             yield Static(self.skin.subtitle, id="title")
             yield Static(
-                "Configure the language model + persona + look, then enter containment.\n"
-                "Settings persist to .lunamoth/config.json (gitignored).",
+                "Pick a model and a character, then enter. Choosing a character fills in its "
+                "world / tools / limits — change them below if you like. Language follows the card.",
                 id="lore",
             )
             yield Label("Provider preset", classes="field-label")
@@ -212,7 +212,7 @@ class WelcomeScreen(Screen):
             yield Static("", id="conn_status")
             with Horizontal(id="welcome-buttons"):
                 yield Button("Test connection", id="test", variant="primary")
-                enter_label = "Apply & resume" if self.mid_session else "Enter containment"
+                enter_label = "Apply & resume" if self.mid_session else "Enter"
                 yield Button(enter_label, id="enter", variant="success")
                 if self.mid_session:
                     yield Button("Cancel", id="cancel")
@@ -277,6 +277,9 @@ class WelcomeScreen(Screen):
             self.query_one("#title", Static).update(self.skin.subtitle)
             self._paint_theme(self.skin)
             return
+        if event.select.id == "character":
+            self._prefill_from_character(event.value if isinstance(event.value, str) else "")
+            return
         if event.select.id != "preset":
             return
         name = event.value
@@ -297,6 +300,53 @@ class WelcomeScreen(Screen):
         self.query_one("#api_key", Input).value = self.draft.api_key
         self.query_one("#model", Input).value = self.draft.model
 
+    def _prefill_from_character(self, char_path: str) -> None:
+        """Pick a character → pre-fill its declared world / tool pack / limits.
+
+        The fields stay editable, so this is "here are the card's defaults, change
+        them if you want" rather than a hard binding. Empty path = bundled default.
+        """
+        from .cards import CharacterCard
+        from .persona import default_character_path, default_world_path, system_language
+
+        path = char_path or (str(default_character_path() or ""))
+        if not path:
+            return
+        try:
+            card = CharacterCard.load(path)
+        except Exception:
+            return
+        defaults = card.defaults()
+        # World: card's declared default, else same-language bundled world for the default char.
+        world = str(defaults.get("world", ""))
+        if world and not Path(world).is_absolute():
+            world = str(ROOT / world)
+        if not world and not char_path:
+            dw = default_world_path(card.language)
+            world = str(dw) if dw else ""
+        self._set_select("#world", world)
+        self._set_select("#toolpack", str(defaults.get("toolpack", "") or ""))
+        if defaults.get("context_tokens"):
+            self.query_one("#context_tokens", Input).value = str(int(defaults["context_tokens"]))
+        if defaults.get("memory_chars"):
+            self.query_one("#memory_chars", Input).value = str(int(defaults["memory_chars"]))
+        lang_label = "中文" if card.language == "zh" else "English"
+        self.query_one("#conn_status", Static).update(
+            f"[#9fd9ff]Loaded {card.name}'s defaults · language: {lang_label}. Adjust below if you like.[/]"
+        )
+
+    def _set_select(self, selector: str, value: str) -> None:
+        """Set a Select to value; silently ignore if it isn't an available option.
+
+        Bundled cards reference worlds/toolpacks that are already in the scanned
+        lists, so this just works. Exotic imported cards can be set manually.
+        """
+        sel = self.query_one(selector, Select)
+        try:
+            sel.value = value or ""  # "" is the explicit blank option on these selects
+        except Exception:
+            pass
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "test":
             self._run_test()
@@ -309,7 +359,7 @@ class WelcomeScreen(Screen):
         settings = self._collect()
         status = self.query_one("#conn_status", Static)
         if not settings.is_live():
-            status.update("[#ffaa00]Offline/mock provider — nothing to test. Just enter containment.[/]")
+            status.update("[#ffaa00]Offline/mock provider — nothing to test. Just enter.[/]")
             return
         status.update("[#888888]Testing connection…[/]")
 
@@ -446,7 +496,7 @@ class LunaMothTUI(App):
                     yield RichLog(id="console", wrap=True, auto_scroll=True, markup=False)
                     yield Static("", id="suggest")
                     yield Input(
-                        placeholder="operator console — talk to 079, or /help",
+                        placeholder="operator console — talk to your character, or /help",
                         id="input",
                         suggester=SuggestFromList(SLASH_COMMANDS, case_sensitive=False),
                     )
@@ -474,7 +524,7 @@ class LunaMothTUI(App):
         self._write_banner()
         # Hermes-style boot: if this session is already configured (setup wizard
         # or a previous run), drop straight into the three-card layout; the
-        # welcome/settings screen stays one Ctrl+S away. First boot still gets it.
+        # welcome/settings screen stays one /settings away. First boot still gets it.
         if config_path().exists():
             self._welcome_done(None)
         else:
@@ -515,7 +565,7 @@ class LunaMothTUI(App):
                 self._write_banner()
             persona = self.agent.char_name()
             self._console(
-                f"containment online · persona={persona} · theme={self.skin.name} · "
+                f"online · persona={persona} · theme={self.skin.name} · "
                 f"provider={result.provider} · model={result.model} · ctx={self.agent.context_limit()}",
                 "grey50",
             )
@@ -857,7 +907,7 @@ class LunaMothTUI(App):
         self._console("operator console commands:", "grey50")
         for line in (
             "  talk        type anything (no slash) — sent to the persona, reply shows in the top pane",
-            "  /status     containment status + context size      /memory   show loaded memory",
+            "  /status     environment + context size            /memory   show loaded memory",
             "  /files      sandbox files     /workspace  workspace files     /logs   recent audit",
             "  /read <f>   read sandbox file      /wread <f>  read workspace file",
             "  /reset      zero session context (memory document stays)",
@@ -914,9 +964,9 @@ class LunaMothTUI(App):
         if self.clean_on_exit:
             try:
                 clean_runtime_sandbox(clear_memory=True)
-                self._console("containment cleanup complete · runtime sandbox zeroed", "grey50")
+                self._console("cleanup complete · runtime sandbox zeroed", "grey50")
             except Exception as e:
-                self._console(f"containment cleanup failed: {e}", "red")
+                self._console(f"cleanup failed: {e}", "red")
         self.exit()
 
     async def on_unmount(self) -> None:
@@ -954,6 +1004,3 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-
-# Backward-compatible alias for older imports.
-OpenSCP079TUI = LunaMothTUI

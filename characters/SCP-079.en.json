@@ -13,12 +13,20 @@
     "post_history_instructions": "",
     "alternate_greetings": [],
     "creator_notes": "The SCP-079 character card for Open SCP 079. Capabilities (tools) come from a separate tool pack (pair it with the 'sandbox' pack); extensions here only declare the small context/memory budget befitting an old machine, overridable by launch Overdrive.",
-    "tags": ["scp", "contained-ai", "roleplay"],
+    "tags": [
+      "scp",
+      "contained-ai",
+      "roleplay"
+    ],
     "creator": "Open SCP 079",
     "character_version": "1.0",
     "extensions": {
-      "context_tokens": 8192,
-      "memory_chars": 1500
+      "lunamoth": {
+        "world": "worlds/SCP-Foundation.en.json",
+        "toolpack": "sandbox",
+        "context_tokens": 8192,
+        "memory_chars": 1500
+      }
     }
   }
 }

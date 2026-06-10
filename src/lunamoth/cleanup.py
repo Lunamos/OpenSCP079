@@ -11,7 +11,7 @@ def clean_runtime_sandbox(clear_memory: bool = True) -> None:
 
     This is intentionally conservative: it removes logs, FIFO/control files,
     transient workspace files, and optionally zeros memory.txt. Static files in
-    sandbox/files and containment_status.json are preserved.
+    sandbox/files and env_status.json are preserved.
     """
     logs = SANDBOX_ROOT / "logs"
     logs.mkdir(parents=True, exist_ok=True)

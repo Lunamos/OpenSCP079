@@ -37,9 +37,31 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 - [x] **One-line installer & `lunamoth` CLI** — `curl | bash`, setup wizard, self-update
 - [x] **Named sessions** — `lunamoth new/ls/attach/rm`, each with its own config & sandbox
 - [x] **Isolation selector** — `dir` / `sandbox` (OS jail: sandbox-exec / bubblewrap) / `docker` per session
-- [ ] **Persistent server sessions** — detached background sessions you can re-attach to (today: run inside tmux/screen)
-- [ ] **Remote TUI** — beyond the `ssh host -t lunamoth attach NAME` baseline: a gateway for public-IP/VPS access (high priority)
-- [ ] **Web UI** — remote browser access to running sessions (low priority)
+- [x] **Language-agnostic `terminal` tool** — shell commands under the session's isolation, with a runtime network toggle (`/net on`)
+- [x] **Character-driven config** — language, world, tools and limits all come from the card; the engine stays character-neutral, and plain SillyTavern imports get safe defaults
+
+Each unchecked item below is scoped to be independently completable — it lists the modules it touches, and two items that don't share a module can be worked on in parallel.
+
+**Durability**
+
+- [ ] **Transcript persistence** — save the conversation (including tool calls/results) to the session dir as it happens; `lunamoth attach` restores it, `/reset` starts a new transcript. Foundation for detached sessions and the gateway. *Touches: `context.py`, `agent.py`, new `transcript.py`; session dir layout.*
+- [ ] **Tool-call retention in context** — today the agent loop's tool messages live only inside one `stream_agent` call; keep them in the durable context so the model remembers what it ran last turn. *Touches: `agent.py`, `llm.py`, `context.py`.*
+
+**Robustness**
+
+- [ ] **LLM client hardening** — retry with backoff on transient HTTP/stream errors, optional fallback model, stricter SSE parsing, friendlier error surfacing in the TUI. *Touches: `llm.py` only.*
+
+**Compatibility & extensibility**
+
+- [ ] **World info parity** — close the gap to SillyTavern activation: recursive scanning, token budget, sticky/cooldown/delay, insertion position/depth, probability, case-sensitive & whole-word matching. *Touches: `worldinfo.py` (+ its call sites' signatures stay stable).*
+- [ ] **Declarative tool registry** — replace hardcoded `ToolGateway.tool_*` methods + inline schemas with Hermes-style registration (name, schema, handler, availability check), so new tools are one self-contained module. *Touches: `tools.py`, new `tools/` package.*
+- [ ] **MCP client support** — let a tool pack reference external MCP servers; their tools join the gateway under the same allowlist/audit rules. *Touches: new `mcp.py`, `toolpacks.py`.*
+
+**Remote access** (ordered — each builds on the previous)
+
+- [ ] **Persistent server sessions** — detached background sessions you can re-attach to (today: run inside tmux/screen). Depends on transcript persistence. *Touches: `cli.py`, `sessions.py`, new daemon module.*
+- [ ] **Remote TUI** — beyond the `ssh host -t lunamoth attach NAME` baseline: a gateway for public-IP/VPS access (high priority). *Touches: new `gateway/` package; builds on `SessionMeta.env()`.*
+- [ ] **Web UI** — remote browser access to running sessions (low priority). *Touches: new web module; consumes the gateway.*
 
 ## Features
 
@@ -47,7 +69,7 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 <tr><td><b>SillyTavern-compatible content</b></td><td>Import V2/V3 character cards (PNG or JSON) and world books directly; <code>{{char}}</code>/<code>{{user}}</code> macros, <code>first_mes</code>, embedded <code>character_book</code>, and keyword-triggered lore entries all work.</td></tr>
 <tr><td><b>Native tool calling</b></td><td>Tools are exposed via the OpenAI tool-calling protocol; the agent loop streams text and executes tool calls mid-turn.</td></tr>
 <tr><td><b>Composable tool packs</b></td><td>Capability bundles (<code>toolpacks/*.json</code>) declare exactly which tools a character gets. No pack, no powers.</td></tr>
-<tr><td><b>Sandboxed execution</b></td><td>Python runs in a subprocess with a workspace path guard, module blocklist, and resource limits; switch to a Docker backend (<code>--network none</code>, read-only rootfs, memory/CPU/pid caps) for a stronger boundary.</td></tr>
+<tr><td><b>Sandboxed execution</b></td><td>The <code>terminal</code> tool runs shell commands (any language) under a per-session jail — <code>sandbox-exec</code>/<code>bubblewrap</code> by default, Docker for a stronger boundary — with network off until you flip <code>/net on</code>.</td></tr>
 <tr><td><b>Bounded, auditable memory</b></td><td>Durable memory is a token-capped file the character edits through tools, not an unbounded database; every tool call lands in <code>sandbox/logs/audit.jsonl</code>.</td></tr>
 <tr><td><b>Idle self-talk loop</b></td><td>Optionally let the character keep thinking between your messages (<code>--forever</code>), with capped frequency, history, and memory growth.</td></tr>
 <tr><td><b>Terminal-first TUI</b></td><td>A single-terminal split interface (display stream + operator console) with themes, gauges, and hot-swappable settings.</td></tr>
@@ -62,9 +84,9 @@ curl -fsSL https://raw.githubusercontent.com/Lunamos/LunaMoth/main/install.sh | 
 lunamoth
 ```
 
-The installer puts a checkout in `~/.lunamoth/app`, a managed [uv](https://docs.astral.sh/uv/) in `~/.lunamoth/bin`, and the `lunamoth` command in `~/.local/bin`. First run walks you through a short **setup wizard** (provider → key → model → test), then drops you into the TUI. `lunamoth update` upgrades in place; `lunamoth doctor` checks your environment.
+The installer puts a checkout in `~/.lunamoth/app`, a managed [uv](https://docs.astral.sh/uv/) in `~/.lunamoth/bin`, and the `lunamoth` command in `~/.local/bin`. `lunamoth update` upgrades in place; `lunamoth doctor` checks your environment.
 
-Provider presets: **OpenRouter / OpenAI / Ollama (local) / Mock (offline)** or any custom OpenAI-compatible endpoint. Press **Ctrl+S** in the TUI anytime to hot-swap the backend, character, world, or theme.
+First run opens a **welcome screen**: pick a provider preset (**OpenRouter / OpenAI / Ollama / Mock**) and a **character** — choosing one fills in its world, tools and limits (editable), and the language follows the card. Press **Enter** to start; type `/settings` anytime to hot-swap any of it.
 
 <details>
 <summary>Developing from a clone</summary>
@@ -118,7 +140,6 @@ The default character is **LunaMoth 月蛾** — a serene, self-metamorphosing d
 | `worlds/` | SillyTavern world books (`.json`), or use a card's embedded `character_book` |
 | `toolpacks/` | Tool bundles — which capabilities a character is allowed to use |
 | `themes/` | TUI skins (colors, borders, banner, prompt prefixes) |
-| `prompts/` | Last-resort fallback persona (used only if the default card is missing) |
 
 The dropdowns also scan your local SillyTavern data directory if you opt in with `LUNAMOTH_ST_DIR=~/SillyTavern/data/default-user`.
 
@@ -149,7 +170,7 @@ lunamoth --plain          # legacy plain terminal mode
 ```
 
 In-session: `/help`, `/status`, `/memory`, `/workspace`, `/net on|off`, `/allow-dir <path>`, `/forever on|off`, `/cooldown <s>`, `/exit`.
-Keys: **Ctrl+S** settings · **Ctrl+T** pause/resume thinking · **Ctrl+L** clear · **Ctrl+C** shutdown.
+Everything is a slash command — no chord shortcuts: `/settings`, `/clear`, `/forever on|off`, `/exit`.
 
 ## License & acknowledgements
 

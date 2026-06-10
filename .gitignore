@@ -121,3 +121,7 @@ sandbox/workspace/*
 # reference repos for study (not ours)
 reference/
 .pytest-cache/
+
+# runtime env state (regenerated per session)
+sandbox/env_status.json
+sandbox/containment_status.json

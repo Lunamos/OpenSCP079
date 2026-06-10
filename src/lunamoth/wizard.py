@@ -89,10 +89,9 @@ def run_wizard(non_interactive_ok: bool = True) -> Settings:
         if not _test(settings) and _choose("Connection failed. Continue anyway?", ["re-enter model/key", "continue"], 0) == 0:
             return run_wizard()
 
-    settings.lang = ("en", "zh")[_choose("Language / 语言:", ["English", "中文"], 1 if settings.lang == "zh" else 0) == 1]
     settings.user_name = _ask("Your name ({{user}})", settings.user_name)
 
-    _say("\nCharacter: default is LunaMoth 月蛾 (pick others any time with Ctrl+S in the TUI).")
+    _say("\nCharacter: default is LunaMoth 月蛾 (language follows the card; pick others with Ctrl+S in the TUI).")
 
     path = save_settings(settings)
     _say(f"\nsaved → {path}")

@@ -51,7 +51,10 @@ def _needs_setup(meta: S.SessionMeta) -> bool:
 
 def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
     _activate(meta)
-    if _needs_setup(meta):
+    # The rich TUI has its own first-run welcome screen (provider + character +
+    # world + theme pickers), so we only fall back to the plain-text wizard for
+    # the legacy --plain terminal or a non-interactive shell.
+    if _needs_setup(meta) and (args.plain or not sys.stdin.isatty()):
         from .wizard import run_wizard
 
         run_wizard()

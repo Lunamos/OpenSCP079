@@ -39,7 +39,9 @@ class Settings:
     model: str = "dolphin-phi:2.7b"
     temperature: float = 0.85
     max_tokens: int = 420
-    lang: str = "zh"
+    # NOTE: there is deliberately no `lang` setting. Language is not a user choice —
+    # it is a property of the active character card (a .zh card speaks zh, a .en card
+    # speaks en). The engine and tools are language-agnostic.
     py_backend: str = "sandbox"  # local (dir-level) | sandbox (OS jail, default) | docker
     # SillyTavern-compatible persona. Empty character_path => built-in default persona.
     character_path: str = ""
@@ -108,7 +110,6 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "model": ("OPENAI_MODEL",),
     "temperature": ("LLM_TEMPERATURE",),
     "max_tokens": ("LLM_MAX_TOKENS",),
-    "lang": ("LUNAMOTH_LANG", "LUNAMOSS_LANG"),
     "py_backend": ("LUNAMOTH_PY_BACKEND", "LUNAMOSS_PY_BACKEND"),
     "character_path": ("LUNAMOTH_CHARACTER", "LUNAMOSS_CHARACTER"),
     "world_path": ("LUNAMOTH_WORLD", "LUNAMOSS_WORLD"),

@@ -90,12 +90,15 @@ def _linux_jail(command: str, workspace: Path, allow_network: bool, writable: li
     return cmd
 
 
-def _docker(command: str, workspace: Path, allow_network: bool, image: str, memory_mb: int) -> list[str]:
+def _docker(command: str, workspace: Path, allow_network: bool, image: str, memory_mb: int, cpus: float) -> list[str]:
+    # NOTE: disk isn't hard-capped here — the container is read-only except the
+    # bind-mounted workspace (host disk). A hard quota needs --storage-opt, which
+    # only some drivers accept; we skip it rather than risk failing to launch.
     return [
         "docker", "run", "--rm", "-i",
         "--network", "bridge" if allow_network else "none",
-        "--memory", f"{memory_mb}m", "--cpus", "1", "--pids-limit", "256",
-        "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=64m",
+        "--memory", f"{memory_mb}m", "--cpus", str(cpus), "--pids-limit", "256",
+        "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=256m",
         "-v", f"{workspace}:/workspace:rw", "-w", "/workspace",
         image, "sh", "-c", command,
     ]
@@ -111,7 +114,8 @@ def run_terminal(
     timeout: int = DEFAULT_TIMEOUT,
     workdir: str | None = None,
     image: str = "python:3.11-slim",
-    memory_mb: int = 512,
+    memory_mb: int = 2048,
+    cpus: float = 2,
 ) -> str:
     """Execute *command* in a shell under the active isolation mechanism."""
     workspace = workspace.resolve()
@@ -126,7 +130,7 @@ def run_terminal(
 
     note = ""
     if isolation == "docker" and shutil.which("docker"):
-        cmd: list[str] = _docker(command, workspace, allow_network, image, memory_mb)
+        cmd: list[str] = _docker(command, workspace, allow_network, image, memory_mb, cpus)
         run_cwd = None
     elif isolation == "sandbox" and os_sandbox_available():
         cmd = (_macos_jail if sys.platform == "darwin" else _linux_jail)(command, workspace, allow_network, writable)

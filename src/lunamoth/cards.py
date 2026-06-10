@@ -2,12 +2,35 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .worldinfo import Lorebook, apply_macros
+
+# CJK Unified Ideographs (U+4E00–U+9FFF) — i.e. "does this text contain Han characters".
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def detect_language(source_path: str = "", text: str = "") -> str:
+    """A card's language comes from the card, not a user toggle.
+
+    Filename hint first (`*.zh.json` / `*.en.png` etc.), then CJK content ratio.
+    """
+    stem = Path(source_path).stem.lower() if source_path else ""
+    for suffix in (".zh", "-zh", "_zh", ".cn", "-cn"):
+        if stem.endswith(suffix):
+            return "zh"
+    for suffix in (".en", "-en", "_en"):
+        if stem.endswith(suffix):
+            return "en"
+    if text:
+        cjk = len(_CJK.findall(text))
+        if cjk and cjk / max(1, len(text)) > 0.03:
+            return "zh"
+    return "en"
 
 
 def _read_png_text_chunks(path: Path) -> dict[str, bytes]:
@@ -101,6 +124,24 @@ class CharacterCard:
         else:
             card = json.loads(p.read_text(encoding="utf-8"))
         return cls.from_card_dict(card, source_path=str(p))
+
+    @property
+    def language(self) -> str:
+        """zh or en, derived from the card itself (filename hint, then content)."""
+        sample = " ".join((self.description, self.personality, self.first_mes, self.scenario))[:4000]
+        return detect_language(self.source_path, sample)
+
+    def defaults(self) -> dict[str, Any]:
+        """The card's recommended world / tool pack / limits.
+
+        Lives in `extensions.lunamoth` (SillyTavern-compatible free-form field):
+            {"world": "worlds/X.json", "toolpack": "sandbox",
+             "context_tokens": 1000000, "memory_chars": 8000}
+        Cards that omit it (e.g. plain SillyTavern imports) just get the global
+        fallbacks — so any imported card Just Works.
+        """
+        ext = self.extensions.get("lunamoth")
+        return dict(ext) if isinstance(ext, dict) else {}
 
     def render_system(self, user: str = "User") -> str:
         """Build the persona system block, roughly the way SillyTavern composes it."""

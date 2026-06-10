@@ -13,12 +13,20 @@
     "post_history_instructions": "",
     "alternate_greetings": [],
     "creator_notes": "Open SCP 079 的 SCP-079 角色卡。能力(工具)由独立的 tool pack 提供(建议配 sandbox 包)；这里只用 extensions 声明它作为一台老机器应有的小上下文/小记忆，启动时可被 Overdrive 覆盖。",
-    "tags": ["scp", "contained-ai", "roleplay"],
+    "tags": [
+      "scp",
+      "contained-ai",
+      "roleplay"
+    ],
     "creator": "Open SCP 079",
     "character_version": "1.0",
     "extensions": {
-      "context_tokens": 8192,
-      "memory_chars": 1500
+      "lunamoth": {
+        "world": "worlds/SCP-Foundation.zh.json",
+        "toolpack": "sandbox",
+        "context_tokens": 8192,
+        "memory_chars": 1500
+      }
     }
   }
 }

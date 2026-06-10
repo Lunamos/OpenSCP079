@@ -1,0 +1,50 @@
+"""The engine must be character-agnostic: no SCP / containment / trust framing
+leaks into a character's system prompt. (Regression for the 'noble moth says it
+is in a containment cell' bug.)"""
+import pytest
+
+from lunamoth.settings import Settings
+
+
+@pytest.fixture
+def agent(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("LUNAMOTH_SANDBOX", str(tmp_path / "sandbox"))
+    monkeypatch.setenv("LUNAMOTH_CONFIG_DIR", str(tmp_path / "cfg"))
+    from lunamoth.agent import LunaMothAgent
+
+    def make(**kw):
+        return LunaMothAgent(Settings(character_path="", world_path="", toolpack="", **kw))
+
+    return make
+
+
+_FORBIDDEN = ["containment", "收容", "hostility", "敌意", "trust level", "信任度", "scp-079", "scp 079"]
+
+
+def test_default_character_pairs_with_its_own_world(agent):
+    a = agent()
+    assert a.char_name() == "月蛾"
+    assert a.lang == "zh"  # derived from the card, not a setting
+    assert a.world is not None and "SCP" not in a.world.name  # the moth world, not SCP
+
+
+def test_no_scp_framing_in_system_prompt(agent):
+    a = agent()
+    blob = "\n".join(a._build_system_messages("hello")).lower()
+    for bad in _FORBIDDEN:
+        assert bad not in blob, f"engine leaked {bad!r} into a neutral character's prompt"
+
+
+def test_card_defaults_drive_limits(agent):
+    a = agent()
+    assert a.context_limit() >= 1_000_000   # moth's wide window
+    assert a.toolpack is not None and a.toolpack.name == "sandbox"
+
+
+def test_env_state_is_neutral(agent):
+    a = agent()
+    state = a.state.load()
+    for legacy in ("trust", "hostility", "containment_level", "memory_integrity"):
+        assert legacy not in state
+    assert "terminal" in state["tool_access"] and "inspect_env" in state["tool_access"]

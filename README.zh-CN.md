@@ -37,9 +37,31 @@
 - [x] **一键安装与 `lunamoth` CLI** —— `curl | bash`、设置向导、自更新
 - [x] **多会话管理** —— `lunamoth new/ls/attach/rm`，每个会话独立配置与沙盒
 - [x] **隔离等级选择** —— 按会话选择 `dir` / `sandbox`（OS 级：sandbox-exec / bubblewrap）/ `docker`
-- [ ] **服务器持久会话** —— 可脱离终端后台运行、随时重连（目前可用 tmux/screen 替代）
-- [ ] **远程 TUI** —— 在 `ssh host -t lunamoth attach NAME` 保底方案之外，做公网 IP / VPS 的网关接入（高优先级）
-- [ ] **网页端** —— 浏览器远程访问运行中的会话（低优先级）
+- [x] **语言无关的 `terminal` 工具** —— 在会话隔离下跑 shell 命令，网络可运行时开关（`/net on`）
+- [x] **角色驱动的配置** —— 语言、世界书、工具与限制全部来自角色卡；引擎保持角色无关，普通 SillyTavern 卡也有安全默认值
+
+以下每个未完成项都按"可独立完成"拆分——各自标注了涉及的模块；不共享模块的两项可以并行开发、互不影响。
+
+**持久化**
+
+- [ ] **对话记录持久化** —— 对话（含工具调用与结果）实时落盘到会话目录；`lunamoth attach` 恢复历史，`/reset` 开新记录。这是后台会话与网关的地基。*涉及：`context.py`、`agent.py`、新增 `transcript.py`；会话目录布局。*
+- [ ] **工具调用进入持久上下文** —— 目前 agent loop 的 tool messages 只存活在单次 `stream_agent` 调用内；应保留到持久上下文，让模型记得上一轮自己运行过什么。*涉及：`agent.py`、`llm.py`、`context.py`。*
+
+**健壮性**
+
+- [ ] **LLM 客户端加固** —— 瞬时 HTTP/流式错误重试退避、可选降级模型、更严格的 SSE 解析、TUI 内更友好的报错。*仅涉及：`llm.py`。*
+
+**兼容性与可扩展性**
+
+- [ ] **世界书功能对齐** —— 补齐与 SillyTavern 激活逻辑的差距：递归扫描、token 预算、sticky/cooldown/delay、插入位置/深度、触发概率、大小写与全词匹配。*涉及：`worldinfo.py`（调用方签名保持稳定）。*
+- [ ] **声明式工具注册表** —— 用 Hermes 式注册（名称、schema、handler、可用性检查）替换 `ToolGateway.tool_*` 硬编码方法 + 内联 schema，新工具只需一个自包含模块。*涉及：`tools.py`、新增 `tools/` 包。*
+- [ ] **MCP 客户端支持** —— 工具包可引用外部 MCP 服务器，其工具纳入网关，沿用同一套白名单/审计规则。*涉及：新增 `mcp.py`、`toolpacks.py`。*
+
+**远程接入**（有顺序——逐项递进）
+
+- [ ] **服务器持久会话** —— 可脱离终端后台运行、随时重连（目前可用 tmux/screen 替代）。依赖对话记录持久化。*涉及：`cli.py`、`sessions.py`、新增守护进程模块。*
+- [ ] **远程 TUI** —— 在 `ssh host -t lunamoth attach NAME` 保底方案之外，做公网 IP / VPS 的网关接入（高优先级）。*涉及：新增 `gateway/` 包；基于 `SessionMeta.env()`。*
+- [ ] **网页端** —— 浏览器远程访问运行中的会话（低优先级）。*涉及：新增 web 模块；消费网关。*
 
 ## 特性
 
@@ -47,7 +69,7 @@
 <tr><td><b>兼容 SillyTavern 内容格式</b></td><td>直接导入 V2/V3 角色卡（PNG 或 JSON）和世界书；<code>{{char}}</code>/<code>{{user}}</code> 宏、<code>first_mes</code> 开场白、内嵌 <code>character_book</code>、按关键词触发的 lore 条目均可用。</td></tr>
 <tr><td><b>原生 tool calling</b></td><td>工具通过 OpenAI tool-calling 协议暴露；agent 循环边流式输出文本、边在回合中执行工具调用。</td></tr>
 <tr><td><b>可组合工具包</b></td><td>能力以 <code>toolpacks/*.json</code> 打包，精确声明角色能用哪些工具。没给包，就没有能力。</td></tr>
-<tr><td><b>沙盒执行</b></td><td>Python 在子进程中运行，带 workspace 路径守卫、模块黑名单和资源限制；可切换 Docker 后端（<code>--network none</code>、只读根文件系统、内存/CPU/PID 上限）获得更强边界。</td></tr>
+<tr><td><b>沙盒执行</b></td><td><code>terminal</code> 工具在会话隔离下跑 shell 命令（任意语言）——默认 <code>sandbox-exec</code>/<code>bubblewrap</code> 牢笼，可切 Docker 获得更强边界；网络默认关闭，<code>/net on</code> 实时打开。</td></tr>
 <tr><td><b>有界、可审计的记忆</b></td><td>持久记忆是一个有 token 上限的文件，角色通过工具编辑它，而不是无限数据库；所有工具调用写入 <code>sandbox/logs/audit.jsonl</code>。</td></tr>
 <tr><td><b>空闲自语循环</b></td><td>可选地让角色在你不说话时持续思考（<code>--forever</code>），频率、可见历史和记忆增长都有上限。</td></tr>
 <tr><td><b>终端优先 TUI</b></td><td>单终端分屏界面（上方角色输出流 + 下方操作员控制台），支持主题皮肤、状态仪表和热切换设置。</td></tr>
@@ -62,9 +84,9 @@ curl -fsSL https://raw.githubusercontent.com/Lunamos/LunaMoth/main/install.sh | 
 lunamoth
 ```
 
-安装器会把代码 checkout 到 `~/.lunamoth/app`、托管一份 [uv](https://docs.astral.sh/uv/) 在 `~/.lunamoth/bin`、并把 `lunamoth` 命令装进 `~/.local/bin`。首次运行进入简短的**设置向导**（provider → key → model → 连接测试），随后直接进入 TUI。`lunamoth update` 原地升级；`lunamoth doctor` 检查环境。
+安装器会把代码 checkout 到 `~/.lunamoth/app`、托管一份 [uv](https://docs.astral.sh/uv/) 在 `~/.lunamoth/bin`、并把 `lunamoth` 命令装进 `~/.local/bin`。`lunamoth update` 原地升级；`lunamoth doctor` 检查环境。
 
-Provider 预设：**OpenRouter / OpenAI / Ollama（本地）/ Mock（离线）**，或任意自定义 OpenAI 兼容 endpoint。TUI 内随时按 **Ctrl+S** 热切换后端、角色、世界书或主题。
+首次运行进入**欢迎页**：选一个 provider 预设（**OpenRouter / OpenAI / Ollama / Mock**）和一个**角色**——选中角色后会自动填好它的世界书、工具与限制（可改），语言跟随卡片。按 **Enter** 进入；随时输入 `/settings` 热切换。
 
 <details>
 <summary>从源码开发</summary>
@@ -118,7 +140,6 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 | `worlds/` | SillyTavern 世界书（`.json`），或使用卡内嵌的 `character_book` |
 | `toolpacks/` | 工具包 —— 声明角色被允许使用哪些能力 |
 | `themes/` | TUI 皮肤（配色、边框、banner、提示前缀） |
-| `prompts/` | 兜底人格（仅在默认角色卡缺失时使用） |
 
 设置 `LUNAMOTH_ST_DIR=~/SillyTavern/data/default-user` 后，下拉框还会扫描你本机的 SillyTavern 数据目录。
 
@@ -149,7 +170,7 @@ lunamoth --plain          # 旧版纯终端模式
 ```
 
 会话内命令：`/help`、`/status`、`/memory`、`/workspace`、`/net on|off`、`/allow-dir <path>`、`/forever on|off`、`/cooldown <s>`、`/exit`。
-快捷键：**Ctrl+S** 设置 · **Ctrl+T** 暂停/恢复思考 · **Ctrl+L** 清屏 · **Ctrl+C** 关闭。
+一切皆 slash 命令，无组合键：`/settings`、`/clear`、`/forever on|off`、`/exit`。
 
 ## 许可与致谢
 
