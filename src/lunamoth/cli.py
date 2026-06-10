@@ -11,7 +11,7 @@
     lunamoth update          update the installed checkout (git pull + uv sync)
     lunamoth doctor          check environment & sandbox backends
 
-Each agent is a persistent being: it lives in the background (forever loop) and
+Each agent is a persistent being: it lives in the background on its own and
 you attach/detach. `start-all` brings them all back after a reboot. Remote
 baseline: `ssh host -t lunamoth attach NAME`; future gateways reuse
 `sessions.SessionMeta.env()` as the activation interface.
@@ -54,8 +54,8 @@ def _needs_setup(meta: S.SessionMeta) -> bool:
 
 # ---- background daemon (persistent agents) ---------------------------------
 
-def _start_daemon(meta: S.SessionMeta, cooldown: float = 2.0) -> bool:
-    """Spawn a detached background process running this agent's forever loop.
+def _start_daemon(meta: S.SessionMeta, patience: float = 2.0) -> bool:
+    """Spawn a detached background process where this agent lives on its own.
 
     The agent keeps thinking / creating in its workspace with no terminal
     attached. Returns True if it started (or was already running)."""
@@ -67,7 +67,7 @@ def _start_daemon(meta: S.SessionMeta, cooldown: float = 2.0) -> bool:
     env.setdefault("LUNAMOTH_PY_BACKEND", _ISOLATION_TO_BACKEND[meta.isolation])
     log = meta.daemon_log.open("ab")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "lunamoth.terminal", "--cooldown", str(cooldown)],
+        [sys.executable, "-m", "lunamoth.terminal", "--patience", str(patience)],
         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, env=env, cwd=str(APP_DIR),
     )
@@ -108,11 +108,12 @@ def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
         from .wizard import run_wizard
 
         run_wizard()
-    argv = [sys.argv[0], "--cooldown", str(args.cooldown)]
-    # Persistent-agent philosophy: the idle self-talk loop is ON by default
-    # (opt out with --no-forever). plain terminal mode handles thinking itself.
-    if not getattr(args, "no_forever", False) and not args.plain:
-        argv.append("--forever")
+    argv = [sys.argv[0], "--patience", str(args.patience)]
+    # The interaction mode lives in the chara's own config; pass it down only when
+    # the operator overrides it for this attach (--mode, or the legacy --no-forever).
+    mode = args.mode or ("chat" if getattr(args, "no_forever", False) else "")
+    if mode:
+        argv += ["--mode", mode]
     if args.clean_on_exit:
         argv.append("--clean-on-exit")
     module = "lunamoth.terminal" if args.plain else "lunamoth.tui"
@@ -127,7 +128,7 @@ def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
         meta.clear_running()
         # Hand the agent back to the background if it was living there.
         if was_daemon and meta.is_configured():
-            _start_daemon(meta, cooldown=args.cooldown)
+            _start_daemon(meta, patience=args.patience)
 
 
 # ---- subcommands -----------------------------------------------------------
@@ -234,7 +235,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not meta.is_configured():
         print(f"error: chara {args.name!r} isn't set up yet — `lunamoth attach {args.name}` first", file=sys.stderr)
         return 1
-    _start_daemon(meta, cooldown=args.cooldown)
+    _start_daemon(meta, patience=args.patience)
     print(f"{args.name}: running in the background (pid {meta.daemon_pid()}) · logs: {meta.daemon_log}")
     return 0
 
@@ -388,8 +389,11 @@ def _maybe_update_hint() -> None:
 
 
 def _add_tui_flags(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--cooldown", type=float, default=2.0, help="idle self-talk pause seconds")
-    p.add_argument("--no-forever", action="store_true", help="start with the idle self-talk loop OFF (default: ON)")
+    p.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0,
+                   help="pause between the chara's spontaneous cycles, in seconds")
+    p.add_argument("--mode", choices=["live", "chat"], default="",
+                   help="override the chara's interaction mode for this attach (live: keeps creating while you watch; chat: only replies)")
+    p.add_argument("--no-forever", action="store_true", help=argparse.SUPPRESS)  # pre-rename alias for --mode chat
     p.add_argument("--plain", action="store_true", help="legacy plain terminal instead of the TUI")
     p.add_argument("--clean-on-exit", action="store_true", help="wipe the session sandbox on shutdown (default: persist)")
 
@@ -416,14 +420,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tui_flags(sp)
     sp.set_defaults(func=cmd_attach)
 
-    sp = sub.add_parser("start", help="run an agent in the background (forever loop); --all for every agent")
+    sp = sub.add_parser("start", help="let an agent live in the background; --all for every agent")
     sp.add_argument("name", nargs="?")
     sp.add_argument("--all", action="store_true", help="start every configured agent")
-    sp.add_argument("--cooldown", type=float, default=2.0)
+    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0)
     sp.set_defaults(func=cmd_start)
 
     sp = sub.add_parser("start-all", help="start every configured agent in the background (e.g. after a reboot)")
-    sp.add_argument("--cooldown", type=float, default=2.0)
+    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0)
     sp.set_defaults(func=lambda a: (_start_all() or 0))
 
     sp = sub.add_parser("stop", help="stop an agent's background loop; --all to stop every agent")

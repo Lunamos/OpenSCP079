@@ -34,7 +34,7 @@ def test_unconfigured_agent_does_not_daemonize():
 def test_daemon_start_and_stop():
     meta = S.create_session("c")
     _configure(meta)
-    assert cli._start_daemon(meta, cooldown=5) is True
+    assert cli._start_daemon(meta, patience=5) is True
     pid = meta.daemon_pid()
     assert pid and pid > 0
     # the recorded pid is a live process

@@ -103,7 +103,11 @@ def test_memory_grant_raises_budget(agent):
 def test_mode_normalization():
     from lunamoth.presence import normalize_mode
 
-    assert normalize_mode("always") == "always"
-    assert normalize_mode("OFF ") == "off"
-    assert normalize_mode("banana") == "auto"
-    assert normalize_mode("") == "auto"
+    assert normalize_mode("live") == "live"
+    assert normalize_mode("CHAT ") == "chat"
+    # Pre-rename spellings map onto the two modes.
+    assert normalize_mode("auto") == "live"
+    assert normalize_mode("always") == "live"
+    assert normalize_mode("off") == "chat"
+    assert normalize_mode("banana") == "live"
+    assert normalize_mode("") == "live"

@@ -10,14 +10,16 @@ The prompts live in the card and ONLY in the card — the engine ships no defaul
 text and knows nothing about any specific character. A card that declares
 neither simply gets no presence events: attach and detach pass silently.
 
-One global mode (Claude-Code-style, in Settings.presence, `/presence` to flip):
+How the chara behaves WHILE the operator is attached is one per-chara setting
+(Settings.mode, `/mode` to flip) with exactly two values — see prompts.py:
 
-    auto    (default) on attach the character greets, then the forever loop is
-            HELD until the operator's first message; it resumes only if forever
-            was already configured on.
-    always  greet on attach, never wait — the loop keeps running immediately.
-    off     no presence events; the character never self-starts (the operator
-            can still `/forever on` explicitly).
+    live   (default) greets you, then keeps living its own loop while you watch
+           (with a grace pause after the greeting so you can take the first word).
+    chat   greets you, then attends to you only — no self-talk while attached.
+
+Detached life is NOT a mode: `lunamoth start/stop` is that switch, and a
+running daemon always self-runs. Being present is a FACT (user_present), not a
+setting.
 
 Cross-process handoff: when a TUI detaches, the detach event is queued in a
 small state file inside the session sandbox; the background daemon consumes it

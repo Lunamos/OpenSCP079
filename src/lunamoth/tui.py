@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import queue
+import random
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -22,9 +23,8 @@ from textual.widgets import Button, Footer, Header, Input, Label, RichLog, Selec
 SLASH_COMMANDS = [
     "/help", "/status", "/memory", "/memory_path", "/files", "/workspace",
     "/read", "/wread", "/write", "/logs", "/reset",
-    "/forever on", "/forever off", "/cooldown", "/theme", "/net on", "/net off",
-    "/allow-dir", "/presence auto", "/presence always", "/presence off",
-    "/settings", "/clear", "/exit",
+    "/mode live", "/mode chat", "/patience", "/theme", "/net on", "/net off",
+    "/allow-dir", "/settings", "/clear", "/exit",
 ]
 
 from . import art
@@ -32,7 +32,7 @@ from .agent import LunaMothAgent, Session
 from .cleanup import clean_runtime_sandbox
 from .config import ROOT
 from .llm import LLMClient
-from .presence import MODES as PRESENCE_MODES, normalize_mode
+from .presence import MODES, normalize_mode
 from .settings import PRESETS, Settings, config_path, load_settings, save_settings
 from .themes import TuiTheme, load_theme
 
@@ -462,14 +462,20 @@ class LunaMothTUI(App):
         ("ctrl+c", "quit_clean", "Shutdown"),
     ]
 
-    def __init__(self, cooldown: float = 2.0, clean_on_exit: bool = False, forever: bool = False):
+    # Spontaneous-cycle activity words, shown in the status line while a self-talk
+    # stream runs (replies always show as "talking"; idle shows "waiting").
+    ACTIVITIES = ("working", "thinking", "musing", "tinkering", "dreaming")
+
+    def __init__(self, patience: float = 2.0, clean_on_exit: bool = False, mode_override: str = ""):
         super().__init__()
-        self.cooldown = cooldown
+        # `patience` = how long the chara waits after a turn before its next
+        # spontaneous cycle (live mode). This is pacing, not model reasoning.
+        self.patience = patience
         self.clean_on_exit = clean_on_exit
-        # `forever` = the eternal self-talk loop (the character keeps thinking aloud on its own).
-        # This is NOT the model's chain-of-thought / reasoning ("thinking") — that's separate.
-        self.forever = forever
         self.settings = load_settings()
+        # Interaction mode (live = it keeps living while you watch; chat = it
+        # attends to you only). Per-chara persisted; a CLI flag may override.
+        self.mode = normalize_mode(mode_override or self.settings.mode)
         self.skin = load_theme(self.settings.tui_theme_path)
         self.agent = LunaMothAgent(self.settings)
         self.session = self.agent.make_session()
@@ -479,16 +485,16 @@ class LunaMothTUI(App):
         self.worker_lock = threading.Lock()
         self.shutdown_requested = False
         self.display_text = ""
-        self.next_forever_at = time.monotonic() + 0.2
+        self.next_spont_at = time.monotonic() + 0.2
+        # Attach grace: after the arrival greeting the chara leaves you room for
+        # the first word; if you stay silent past this it returns to its work.
+        self.grace_until = 0.0
+        self._activity = "waiting"
         self._session_started = False
         # Operator messages are QUEUED, never dropped: with a live provider a think
         # cycle is almost always streaming, so starting a stream synchronously on submit
         # would silently fail. The pump (scheduler + submit) drains this with priority.
         self.pending_input: str | None = None
-        # Presence awareness (see presence/): the mode, plus the auto-mode latch that
-        # holds self-talk after attach until the operator's first message.
-        self.presence_mode = normalize_mode(self.settings.presence)
-        self.forever_held = False
         self._detached = False
         # Pending request_permission call: the worker thread blocks on _perm_event
         # while the operator answers (y/n) in the console; timeout = deny.
@@ -569,7 +575,7 @@ class LunaMothTUI(App):
             self.settings = result
             save_settings(result)
             self.agent.reconfigure(result)
-            self.presence_mode = normalize_mode(result.presence)
+            self.mode = normalize_mode(result.mode)
             # Re-apply the (possibly new) context limit to the live session.
             self.session.context.max_tokens = self.agent.context_limit()
             self.skin = load_theme(result.tui_theme_path)
@@ -597,37 +603,32 @@ class LunaMothTUI(App):
         self.set_interval(0.03, self._drain_output)
         self.set_interval(0.06, self._flush_display)  # ~16fps repaint of the top pane
         self.set_interval(0.1, self._scheduler_tick)
-        self.next_forever_at = time.monotonic() + 0.2
+        self.next_spont_at = time.monotonic() + 0.2
         # Presence: the chara now has an operator attached.
-        mode = self.presence_mode
         self.agent.state.set_present(True)
         self.agent.presence.pop_event()  # discard any stale handoff line — we're here now
-        if mode == "off":
-            # Never self-start. /forever on remains an explicit operator override.
-            self.forever = False
-        elif mode == "auto":
-            # Greet, then hold self-talk until the operator's first message.
-            self.forever_held = True
+        # Attach grace (live mode): after greeting, leave the operator room for the
+        # first word; if they stay silent the chara simply returns to its work.
+        self.grace_until = time.monotonic() + max(30.0, 2 * self.patience)
         self._update_status()
         name = self.agent.char_name()
         greeting = self.agent.greeting()
         first = self.agent.presence.first_meeting()
-        enter = self.agent.attach_event_text() if mode != "off" else ""
+        enter = self.agent.attach_event_text()
         self.agent.presence.mark_met()
         if greeting and (first or not enter):
             # SillyTavern first_mes: the card's designed opener for a first meeting
             # (also the fallback whenever the card declares no arrival prompt).
             self._append_display(f"{self.skin.reply_pfx(name)}{greeting}\n")
             self.session.context.add("assistant", greeting)
-            self.next_forever_at = time.monotonic() + self.cooldown
+            self.next_spont_at = time.monotonic() + self.patience
         elif enter:
             # The card's on_attach prompt: a live arrival turn — the chara reacts
             # to the operator coming back.
             self._start_stream(StreamJob(kind="event", text=enter), prefix=self.skin.reply_pfx(name))
-        elif mode != "off":
+        else:
             probe = "你是谁？只用一句话回答。" if self.agent.lang == "zh" else "Who are you? Answer in one sentence."
             self._start_stream(StreamJob(kind="user", text=probe), prefix=self.skin.reply_pfx(name))
-        # mode == off with no greeting: stay silent until the operator speaks.
 
     # ---- output routing ----------------------------------------------------------
     # Two surfaces, strictly separated:
@@ -663,7 +664,7 @@ class LunaMothTUI(App):
     def _write_banner(self) -> None:
         self._console(self.skin.tagline, self.skin.tagline_color)
         self._console("Top pane = persona output. This console = your input. Enter sends a message.", "grey50")
-        self._console("Type /help for commands. Self-talk (forever) starts OFF — /forever on to wake it.", "grey50")
+        self._console("Type /help for commands. /mode live = it keeps creating while you watch; /mode chat = it waits for you.", "grey50")
         self._update_status()
 
     def _update_status(self) -> None:
@@ -672,10 +673,9 @@ class LunaMothTUI(App):
         model = self.agent.settings.model
         provider = self.agent.settings.provider
         persona = self.agent.char_name()
-        state = "HELD" if (self.forever and self.forever_held) else ("ON" if self.forever else "OFF")
-        running = "STREAM" if self._is_streaming() else "IDLE"
+        activity = self._activity if self._is_streaming() else "waiting"
         self.status.update(
-            f"persona={persona} | forever={state} | presence={self.presence_mode} | stream={running} | cooldown={self.cooldown:.2f}s | "
+            f"persona={persona} | mode={self.mode} | {activity} | patience={self.patience:.2f}s | "
             f"memory={mem_chars} chars/{self.agent.memory.limits.max_tokens} tok | "
             f"ctx≈{ctx}/{self.session.context.max_tokens} | {provider}:{model}"
         )
@@ -748,7 +748,7 @@ class LunaMothTUI(App):
         net_on = self.agent.state.load().get("network_access", False)
         g.append(
             f"isolation {self.agent.settings.py_backend} · net {'ON' if net_on else 'off'} · "
-            f"forever {'ON' if self.forever else 'OFF'}\n",
+            f"mode {self.mode}\n",
             style="grey50",
         )
         self.gauges.update(g)
@@ -775,11 +775,14 @@ class LunaMothTUI(App):
             if self._is_streaming():
                 return False
             self.interrupt_event.clear()
-            # Hold off the next self-talk cycle until THIS stream's "done" resets the
-            # timer to now+cooldown. Without this, _pump could fire a fresh think in
-            # the gap between the worker thread dying and "done" being drained — the
-            # cooldown would be bypassed and the chara would spam (talkative loop).
-            self.next_forever_at = time.monotonic() + 86400
+            # Hold off the next spontaneous cycle until THIS stream's "done" resets
+            # the timer to now+patience. Without this, _pump could fire a fresh think
+            # in the gap between the worker thread dying and "done" being drained —
+            # the pause would be bypassed and the chara would spam (talkative loop).
+            self.next_spont_at = time.monotonic() + 86400
+            # Status-line activity word: replies are "talking"; spontaneous cycles
+            # rotate through the activity vocabulary.
+            self._activity = "talking" if job.kind in ("user", "event") else random.choice(self.ACTIVITIES)
             thread = threading.Thread(target=self._stream_worker, args=(job, prefix), daemon=True)
             self.current_thread = thread
             thread.start()
@@ -830,13 +833,13 @@ class LunaMothTUI(App):
                 self._console(text, "yellow")
             elif kind == "done":
                 self._append_display(text)
-                self.next_forever_at = time.monotonic() + self.cooldown
+                self.next_spont_at = time.monotonic() + self.patience
         if wrote:
             self._update_status()
 
     def _pump(self) -> None:
         """Start the next stream when idle. Operator input has priority over self-talk,
-        so a queued message is never lost behind a long live-provider forever cycle."""
+        so a queued message is never lost behind a long live-provider spontaneous cycle."""
         if self.shutdown_requested or self._is_streaming():
             return
         if self.pending_input is not None:
@@ -844,10 +847,10 @@ class LunaMothTUI(App):
             self.pending_input = None
             self._start_stream(StreamJob(kind="user", text=text), prefix=self.skin.reply_pfx(self.agent.char_name()))
             return
-        if self.forever and not self.forever_held and time.monotonic() >= self.next_forever_at:
-            # forever = eternal self-talk. The thought prefix marks a spontaneous cycle;
-            # the stream itself shows the persona is working. No "[internal cycle]" banner.
-            # (forever_held = presence auto mode is waiting for the operator to speak first.)
+        now = time.monotonic()
+        if self.mode == "live" and now >= self.next_spont_at and now >= self.grace_until:
+            # live mode = the chara keeps living: spontaneous cycles between your
+            # messages, paced by `patience` (plus the post-greeting attach grace).
             self._start_stream(StreamJob(kind="think"), prefix=self.skin.thought_pfx(self.agent.char_name()))
 
     def _scheduler_tick(self) -> None:
@@ -886,47 +889,41 @@ class LunaMothTUI(App):
         if low in {"/clear", "/cls"}:
             await self.action_clear_display()
             return
-        if low.startswith("/cooldown"):
+        if low.startswith(("/patience", "/cooldown")):
             parts = text.split(maxsplit=1)
             if len(parts) == 2:
                 try:
-                    self.cooldown = max(0.0, float(parts[1]))
-                    self._console(f"cooldown = {self.cooldown:.2f}s", "grey50")
-                    self.next_forever_at = time.monotonic() + self.cooldown
+                    self.patience = max(0.0, float(parts[1]))
+                    self._console(f"patience = {self.patience:.2f}s", "grey50")
+                    self.next_spont_at = time.monotonic() + self.patience
                     self._update_status()
                 except ValueError:
-                    self._console("bad cooldown value", "red")
+                    self._console("bad patience value", "red")
             else:
-                self._console(f"cooldown = {self.cooldown:.2f}s (usage: /cooldown <sec>)", "grey50")
+                self._console(f"patience = {self.patience:.2f}s (usage: /patience <sec>)", "grey50")
             return
+        # Pre-rename muscle memory: forever on/off were the old names for the modes.
         if low in {"/forever off", "/forever", "/pause"}:
-            self.forever = False
-            self.forever_held = False
-            self._console("forever (self-talk) = OFF", "grey50")
-            self._update_status()
-            return
-        if low in {"/forever on", "/resume"}:
-            self.forever = True
-            self.forever_held = False
-            self.next_forever_at = time.monotonic()
-            self._console("forever (self-talk) = ON", "grey50")
-            self._update_status()
-            return
-        if low.startswith("/presence"):
+            low = "/mode chat"
+        elif low in {"/forever on", "/resume"}:
+            low = "/mode live"
+        if low.startswith(("/mode", "/presence")):
             parts = low.split()
-            if len(parts) == 2 and parts[1] in PRESENCE_MODES:
-                self.presence_mode = parts[1]
-                self.settings = replace(self.settings, presence=parts[1])
+            known = set(MODES) | {"on", "off", "auto", "always"}  # incl. pre-rename spellings
+            if len(parts) == 2 and parts[1] in known:
+                want = normalize_mode(parts[1])
+                self.mode = want
+                self.grace_until = 0.0  # mid-session switch: the operator is clearly here
+                if want == "live":
+                    self.next_spont_at = time.monotonic() + self.patience
+                self.settings = replace(self.settings, mode=want)
                 save_settings(self.settings)
-                if parts[1] == "off":
-                    self.forever = False
-                self.forever_held = False  # mid-session switch: the operator is clearly here
-                self._console(f"presence = {parts[1]} (persisted)", "grey50")
+                self._console(f"mode = {want} (persisted for this chara)", "grey50")
                 self._update_status()
             else:
                 self._console(
-                    f"presence = {self.presence_mode}  (usage: /presence auto|always|off — "
-                    "auto: greet on attach then wait for you; always: never wait; off: no presence events)",
+                    f"mode = {self.mode}  (usage: /mode live|chat — live: it keeps creating "
+                    "while you watch; chat: it waits and only replies to you)",
                     "grey50",
                 )
             return
@@ -975,9 +972,8 @@ class LunaMothTUI(App):
         if self.display_text and not self.display_text.endswith("\n\n"):
             self._append_display("\n")
         self._append_display(f"{self.skin.operator_pfx(self.settings.user_name)}{text}\n")
-        # Presence auto mode: the operator has spoken — release the self-talk hold
-        # (forever resumes only if it was configured on; we never force it on).
-        self.forever_held = False
+        # The operator has spoken — the attach grace has served its purpose.
+        self.grace_until = 0.0
         self.pending_input = text
         # Interrupt any in-flight cycle so the queued message goes out promptly; the pump
         # then starts it the moment the worker actually stops.
@@ -993,12 +989,12 @@ class LunaMothTUI(App):
             "  /files      sandbox files     /workspace  workspace files     /logs   recent audit",
             "  /read <f>   read sandbox file      /wread <f>  read workspace file",
             "  /reset      zero session context (memory document stays)",
-            "  /forever on|off   eternal self-talk loop (default off; NOT model reasoning)",
-            "  /presence auto|always|off  attach/detach awareness — auto: greet then wait for you;",
-            "                    always: greet and keep running; off: no events, never self-starts",
+            "  /mode live|chat   how it behaves while you're here — live: keeps creating while",
+            "                    you watch (interject anytime); chat: waits and only replies to you",
             "  /net on|off       allow the terminal tool to reach the network (this session)",
             "  /allow-dir <path> add a writable path outside the workspace (sandbox isolation)",
-            "  /cooldown <sec>   self-talk pause      /theme [name]   list/switch TUI skin",
+            "  /patience <sec>   pause between its spontaneous cycles (live mode)",
+            "  /theme [name]     list/switch TUI skin",
             "  /settings   reopen config      /clear   clear top pane      /exit   shut down",
         ):
             self._console(line, "grey62")
@@ -1059,8 +1055,7 @@ class LunaMothTUI(App):
             return
         self._detached = True
         try:
-            if self.presence_mode != "off":
-                self.agent.note_detach(self.session)
+            self.agent.note_detach(self.session)
         except Exception:
             pass
         try:
@@ -1108,21 +1103,24 @@ class LunaMothTUI(App):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LunaMoth single-terminal TUI")
-    parser.add_argument("--cooldown", type=float, default=2.0)
-    # `forever` = eternal self-talk loop, OFF by default; --forever opts in at boot.
-    # --think/--no-think kept as harmless aliases for muscle memory / existing scripts.
-    parser.add_argument("--forever", action="store_true")
-    parser.add_argument("--think", action="store_true", help="alias for --forever")
-    parser.add_argument("--no-think", action="store_true")
+    # `patience` = pause between spontaneous cycles; --cooldown kept as an alias.
+    parser.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0)
+    # Interaction mode (default: the chara's persisted setting). --forever/--think
+    # and --no-think kept as pre-rename aliases for live/chat.
+    parser.add_argument("--mode", choices=["live", "chat"], default="")
+    parser.add_argument("--forever", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--think", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-think", action="store_true", help=argparse.SUPPRESS)
     # Persistence is the default (like Hermes / Claude Code). Opt in to wiping
     # the session sandbox on exit; --no-clean-on-exit kept as a harmless alias.
     parser.add_argument("--clean-on-exit", action="store_true")
     parser.add_argument("--no-clean-on-exit", action="store_true")
     args = parser.parse_args(argv)
+    mode_override = args.mode or ("live" if (args.forever or args.think) else ("chat" if args.no_think else ""))
     app = LunaMothTUI(
-        cooldown=args.cooldown,
+        patience=args.patience,
         clean_on_exit=args.clean_on_exit,
-        forever=args.forever or args.think,
+        mode_override=mode_override,
     )
     app.run()
     return 0

@@ -62,11 +62,11 @@ class Settings:
     memory_tokens: int = 0
     # TUI theme card (cosmetic skin: banner/colors/decoration). Empty => built-in LunaMoth theme.
     tui_theme_path: str = ""
-    # Presence awareness mode (Claude-Code-style global mode, see presence.py):
-    #   auto   = greet on attach, hold the forever loop until the operator speaks
-    #   always = greet on attach, never wait
-    #   off    = no presence events; the character never self-starts
-    presence: str = "auto"
+    # Interaction mode — how the chara behaves while you are attached (see presence/):
+    #   live = greets you, then keeps living its own loop while you watch (default)
+    #   chat = greets you, then attends to you only — no self-talk while attached
+    # (Detached life is not a mode: `lunamoth start/stop` is that switch.)
+    mode: str = "live"
 
     def is_live(self) -> bool:
         return self.provider.strip().lower() in LIVE_PROVIDERS and bool(self.base_url.strip())
@@ -129,7 +129,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "context_tokens": ("LUNAMOTH_CONTEXT_TOKENS", "LUNAMOSS_CONTEXT_TOKENS"),
     "memory_chars": ("LUNAMOTH_MEMORY_CHARS", "LUNAMOSS_MEMORY_CHARS"),
     "memory_tokens": ("LUNAMOTH_MEMORY_TOKENS", "LUNAMOSS_MEMORY_TOKENS"),
-    "presence": ("LUNAMOTH_PRESENCE",),
+    "mode": ("LUNAMOTH_MODE", "LUNAMOTH_PRESENCE"),
 }
 
 _INT_FIELDS = {"max_tokens", "context_tokens", "memory_chars", "memory_tokens"}
@@ -144,7 +144,7 @@ def _coerce(name: str, raw: Any) -> Any:
         return int(raw)
     if name == "provider":
         return str(raw).strip().lower()
-    if name == "presence":
+    if name == "mode":
         from .presence import normalize_mode
 
         return normalize_mode(str(raw))
@@ -166,6 +166,9 @@ def load_settings() -> Settings:
     if CONFIG_PATH.exists():
         try:
             file_data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            # Config written before the presence->mode rename.
+            if "mode" not in file_data and file_data.get("presence"):
+                file_data["mode"] = file_data["presence"]
             for k, v in file_data.items():
                 if k in _FIELD_TYPES and v is not None:
                     try:

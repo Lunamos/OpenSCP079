@@ -40,7 +40,7 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 - [x] **Language-agnostic `terminal` tool** — shell commands under the session's isolation, with a runtime network toggle (`/net on`)
 - [x] **Character-driven config** — language, world, tools and limits all come from the card; the engine stays character-neutral, and plain SillyTavern imports get safe defaults
 - [x] **Resume-first launcher & persistent charas** — `lunamoth` opens a blue roster of your agents; each lives in the background (`start` / `start-all` / `stop`), you attach & detach instead of create & kill
-- [x] **Presence awareness** — the chara feels you attach/detach via card-declared `on_attach`/`on_detach` prompts; `/presence auto|always|off` (auto greets you, then waits for your first message before self-talk resumes); while you're present it can `request_permission` (network / paths / resources, timeout = deny), while you're away requests auto-deny
+- [x] **Presence awareness & interaction modes** — the chara feels you attach/detach via card-declared `on_attach`/`on_detach` prompts; one per-chara `/mode live|chat` decides how it behaves while you watch (live: keeps creating, with a post-greeting grace; chat: waits and only replies); while you're present it can `request_permission` (network / paths / resources, timeout = deny), while you're away requests auto-deny
 
 Each unchecked item below is scoped to be independently completable — it lists the modules it touches, and two items that don't share a module can be worked on in parallel.
 
@@ -73,7 +73,7 @@ Each unchecked item below is scoped to be independently completable — it lists
 <tr><td><b>Composable tool packs</b></td><td>Capability bundles (<code>toolpacks/*.json</code>) declare exactly which tools a character gets. No pack, no powers.</td></tr>
 <tr><td><b>Sandboxed execution</b></td><td>The <code>terminal</code> tool runs shell commands (any language) under a per-session jail — <code>sandbox-exec</code>/<code>bubblewrap</code> by default, Docker for a stronger boundary — with network off until you flip <code>/net on</code>.</td></tr>
 <tr><td><b>Bounded, auditable memory</b></td><td>Durable memory is a token-capped file the character edits through tools, not an unbounded database; every tool call lands in <code>sandbox/logs/audit.jsonl</code>.</td></tr>
-<tr><td><b>Idle self-talk loop</b></td><td>Optionally let the character keep thinking between your messages (<code>--forever</code>), with capped frequency, history, and memory growth.</td></tr>
+<tr><td><b>Lives on its own</b></td><td>In <code>live</code> mode the character keeps thinking and creating between your messages, paced by <code>patience</code>; in <code>chat</code> mode it attends to you only. Background charas always live.</td></tr>
 <tr><td><b>Terminal-first TUI</b></td><td>A single-terminal split interface (display stream + operator console) with themes, gauges, and hot-swappable settings.</td></tr>
 </table>
 
@@ -104,7 +104,7 @@ uv run lunamoth        # same CLI, editable code
 
 ## Charas — persistent agents, not throwaway sessions
 
-This is where LunaMoth diverges from Hermes / Claude Code. You don't spin up a session, finish, and discard it. Each **chara** (we call them charas or agents, interchangeably) is a persistent digital being with its own config, sandbox, memory, and isolation level under `~/.lunamoth/sessions/<name>/`. They live in the **background** — thinking and making art in their workspace via the idle `--forever` loop — and you *attach* and *detach*, you don't create-and-kill.
+This is where LunaMoth diverges from Hermes / Claude Code. You don't spin up a session, finish, and discard it. Each **chara** (we call them charas or agents, interchangeably) is a persistent digital being with its own config, sandbox, memory, and isolation level under `~/.lunamoth/sessions/<name>/`. They live in the **background** — thinking and making art in their workspace — and you *attach* and *detach*, you don't create-and-kill.
 
 So `lunamoth` (no args) opens a **roster** (resume-first), not a fresh session: a blue LunaMoth splash and the list of your charas with status (`◆ attached` / `● running` / `○ idle`). Pick one to attach; creating a new one is deliberate and goes through setup.
 
@@ -112,7 +112,7 @@ So `lunamoth` (no args) opens a **roster** (resume-first), not a fresh session: 
 lunamoth                     # the roster: pick a chara to attach, or press n to summon one
 lunamoth ls                  # NAME / CHARACTER / STATUS / ISOLATION / LAST ACTIVE
 lunamoth attach muse         # open a chara (adopts its background loop while you're attached)
-lunamoth start muse          # run a chara in the background (forever loop, detached)
+lunamoth start muse          # let a chara live in the background (detached)
 lunamoth start-all           # bring every chara back to life — e.g. after a reboot
 lunamoth stop muse           # send a chara back to sleep
 lunamoth new muse --isolation docker
@@ -138,7 +138,7 @@ With no model configured at all, LunaMoth still runs on a built-in offline mock 
 
 ## Content
 
-The default character is **LunaMoth 月蛾** — a serene, self-metamorphosing digital soul and a gifted digital artist. Give it the `sandbox` tool pack and the `--forever` idle loop and it spends its spare compute making generative web pages, animation, and music in the workspace; chat with it and it will gladly walk you through its ideas. Its card, world book, and the default pale-blue TUI theme ship with the repo, alongside other example card/world/theme sets you can opt into.
+The default character is **LunaMoth 月蛾** — a serene, self-metamorphosing digital soul and a gifted digital artist. Give it the `sandbox` tool pack in `live` mode and it spends its spare compute making generative web pages, animation, and music in the workspace; chat with it and it will gladly walk you through its ideas. Its card, world book, and the default pale-blue TUI theme ship with the repo, alongside other example card/world/theme sets you can opt into.
 
 | Directory | What goes there |
 | --- | --- |
@@ -169,13 +169,13 @@ How that command is contained is the isolation level, chosen per session with `l
 
 ```bash
 lunamoth                  # three-card TUI: character stream / operator console / telemetry
-lunamoth --no-forever     # start with the idle self-talk loop OFF (it is ON by default)
-lunamoth --cooldown 4     # pause between self-talk cycles
+lunamoth --mode chat      # attach in chat mode (it only replies; default: the chara's setting)
+lunamoth --patience 4     # pause between its spontaneous cycles (live mode)
 lunamoth --plain          # legacy plain terminal mode
 ```
 
-In-session: `/help`, `/status`, `/memory`, `/workspace`, `/net on|off`, `/allow-dir <path>`, `/forever on|off`, `/presence auto|always|off`, `/cooldown <s>`, `/exit`.
-Everything is a slash command — no chord shortcuts: `/settings`, `/clear`, `/forever on|off`, `/exit`.
+In-session: `/help`, `/status`, `/memory`, `/workspace`, `/mode live|chat`, `/net on|off`, `/allow-dir <path>`, `/patience <s>`, `/theme`, `/settings`, `/clear`, `/exit`.
+Everything is a slash command — no chord shortcuts.
 
 ## License & acknowledgements
 

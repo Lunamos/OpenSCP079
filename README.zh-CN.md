@@ -40,7 +40,7 @@
 - [x] **语言无关的 `terminal` 工具** —— 在会话隔离下跑 shell 命令，网络可运行时开关（`/net on`）
 - [x] **角色驱动的配置** —— 语言、世界书、工具与限制全部来自角色卡；引擎保持角色无关，普通 SillyTavern 卡也有安全默认值
 - [x] **Resume 优先的启动器与持久 chara** —— `lunamoth` 打开蓝色名册；每个 chara 在后台持续运行（`start` / `start-all` / `stop`），你 attach / detach 而非创建 / 杀死
-- [x] **在场感知** —— chara 能感觉到你的接入/离开，提示词由角色卡 `on_attach`/`on_detach` 声明；`/presence auto|always|off`（auto：接入时打招呼，等你先开口再恢复自语）；你在场时它可以 `request_permission` 请求网络/路径/资源（超时即拒绝），你不在场时请求自动拒绝
+- [x] **在场感知与相处模式** —— chara 能感觉到你的接入/离开，提示词由角色卡 `on_attach`/`on_detach` 声明；每个 chara 一个 `/mode live|chat` 决定它在你面前怎么相处（live：打完招呼留一段宽限后继续自己的创作；chat：专心陪聊只在你说话时回应）；你在场时它可以 `request_permission` 请求网络/路径/资源（超时即拒绝），你不在场时请求自动拒绝
 
 以下每个未完成项都按"可独立完成"拆分——各自标注了涉及的模块；不共享模块的两项可以并行开发、互不影响。
 
@@ -73,7 +73,7 @@
 <tr><td><b>可组合工具包</b></td><td>能力以 <code>toolpacks/*.json</code> 打包，精确声明角色能用哪些工具。没给包，就没有能力。</td></tr>
 <tr><td><b>沙盒执行</b></td><td><code>terminal</code> 工具在会话隔离下跑 shell 命令（任意语言）——默认 <code>sandbox-exec</code>/<code>bubblewrap</code> 牢笼，可切 Docker 获得更强边界；网络默认关闭，<code>/net on</code> 实时打开。</td></tr>
 <tr><td><b>有界、可审计的记忆</b></td><td>持久记忆是一个有 token 上限的文件，角色通过工具编辑它，而不是无限数据库；所有工具调用写入 <code>sandbox/logs/audit.jsonl</code>。</td></tr>
-<tr><td><b>空闲自语循环</b></td><td>可选地让角色在你不说话时持续思考（<code>--forever</code>），频率、可见历史和记忆增长都有上限。</td></tr>
+<tr><td><b>自己生活</b></td><td><code>live</code> 模式下角色在你的消息间隙持续思考与创作，节奏由 <code>patience</code> 控制；<code>chat</code> 模式下它只专心陪你。后台 chara 永远自己生活。</td></tr>
 <tr><td><b>终端优先 TUI</b></td><td>单终端分屏界面（上方角色输出流 + 下方操作员控制台），支持主题皮肤、状态仪表和热切换设置。</td></tr>
 </table>
 
@@ -104,7 +104,7 @@ uv run lunamoth        # 同一个 CLI，代码可编辑
 
 ## Chara —— 持续存在的智能体，而非用完即弃的会话
 
-这是 LunaMoth 和 Hermes / Claude Code 最不同的地方。你不是开一个会话、干完就丢。每一个 **chara**（我们叫它 chara 或 agent，混用，一种风味）都是一个持续存在的数字生命，有自己的配置、沙盒、记忆和隔离等级，存放在 `~/.lunamoth/sessions/<name>/`。它们在**后台持续运行**——通过空闲 `--forever` 循环在自己的 workspace 里思考、创作——你是 *attach / detach*，而不是随手创建、随手杀掉。
+这是 LunaMoth 和 Hermes / Claude Code 最不同的地方。你不是开一个会话、干完就丢。每一个 **chara**（我们叫它 chara 或 agent，混用，一种风味）都是一个持续存在的数字生命，有自己的配置、沙盒、记忆和隔离等级，存放在 `~/.lunamoth/sessions/<name>/`。它们在**后台持续运行**——在自己的 workspace 里思考、创作——你是 *attach / detach*，而不是随手创建、随手杀掉。
 
 所以 `lunamoth`（无参数）打开的是一个 **roster（名册，resume 优先）**，而不是一个新会话：一段蓝色 LunaMoth splash + 你的 chara 列表及状态（`◆ 已连接` / `● 后台运行` / `○ 空闲`）。选一个 attach;新建一个是郑重的事,要走 setup。
 
@@ -112,7 +112,7 @@ uv run lunamoth        # 同一个 CLI，代码可编辑
 lunamoth                     # 名册：选一个 chara attach，或按 n 召唤一个新的
 lunamoth ls                  # 名称 / 角色 / 状态 / 隔离 / 最近活跃
 lunamoth attach muse         # 打开一个 chara（连接期间接管它的后台循环）
-lunamoth start muse          # 让一个 chara 在后台运行（forever 循环，脱离终端）
+lunamoth start muse          # 让一个 chara 在后台生活（脱离终端）
 lunamoth start-all           # 把所有 chara 唤醒 —— 比如开机之后
 lunamoth stop muse           # 让一个 chara 回到沉睡
 lunamoth new muse --isolation docker
@@ -138,7 +138,7 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 
 ## 内容目录
 
-默认角色是 **LunaMoth 月蛾**——一个清冷的、会自我蜕变进化的数字灵魂，底色是才华横溢的数字艺术家。给它 `sandbox` 工具包并开启 `--forever` 空闲循环，它会把空余算力投入生成式网页、动画与音乐的创作（保存在 workspace 里）；和它聊天时，它乐于分享自己的创想与灵感。它的角色卡、世界书与浅蓝白的默认 TUI 主题随仓库附带，另有其他示例卡/世界书/主题可自行选用。
+默认角色是 **LunaMoth 月蛾**——一个清冷的、会自我蜕变进化的数字灵魂，底色是才华横溢的数字艺术家。给它 `sandbox` 工具包并保持 `live` 模式，它会把空余算力投入生成式网页、动画与音乐的创作（保存在 workspace 里）；和它聊天时，它乐于分享自己的创想与灵感。它的角色卡、世界书与浅蓝白的默认 TUI 主题随仓库附带，另有其他示例卡/世界书/主题可自行选用。
 
 | 目录 | 放什么 |
 | --- | --- |
@@ -169,13 +169,13 @@ export OPENAI_MODEL=qwen2.5:3b-instruct
 
 ```bash
 lunamoth                  # 三卡片 TUI：角色输出流 / 操作员控制台 / 环境遥测
-lunamoth --no-forever     # 关闭空闲自语循环（默认开启）
-lunamoth --cooldown 4     # 自语循环间隔秒数
+lunamoth --mode chat      # 以 chat 模式接入（只回应你；默认用 chara 自己的设置）
+lunamoth --patience 4     # 自发循环的间隔秒数（live 模式）
 lunamoth --plain          # 旧版纯终端模式
 ```
 
-会话内命令：`/help`、`/status`、`/memory`、`/workspace`、`/net on|off`、`/allow-dir <path>`、`/forever on|off`、`/presence auto|always|off`、`/cooldown <s>`、`/exit`。
-一切皆 slash 命令，无组合键：`/settings`、`/clear`、`/forever on|off`、`/exit`。
+会话内命令：`/help`、`/status`、`/memory`、`/workspace`、`/mode live|chat`、`/net on|off`、`/allow-dir <path>`、`/patience <s>`、`/theme`、`/settings`、`/clear`、`/exit`。
+一切皆 slash 命令，无组合键。
 
 ## 许可与致谢
 
