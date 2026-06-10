@@ -110,8 +110,11 @@ def test_reasoning_policy_openrouter_and_deepseek():
     assert v4.reasoning_supported() and v4.reasoning_echoback_required()
     llama = client("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct")
     assert not llama.reasoning_supported() and not llama.reasoning_echoback_required()
+    # Direct DeepSeek speaks its own dialect: thinking is chosen by MODEL NAME,
+    # the unified `reasoning` object must NOT be sent — but echo-back of
+    # reasoning_content on replayed tool calls is still required.
     direct = client("https://api.deepseek.com/v1", "deepseek-chat")
-    assert direct.reasoning_supported() and direct.reasoning_echoback_required()
+    assert not direct.reasoning_supported() and direct.reasoning_echoback_required()
     ollama = client("http://localhost:11434/v1", "qwen2.5:3b-instruct")
     assert not ollama.reasoning_supported()
 

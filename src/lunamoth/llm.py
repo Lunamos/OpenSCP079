@@ -53,12 +53,21 @@ class LLMClient:
     # ---- reasoning-model policy (hermes-style, OpenRouter + DeepSeek focus) --------
 
     def reasoning_supported(self) -> bool:
-        """Safe to send the `reasoning` request param on this route/model."""
+        """Safe to send the unified `reasoning` request param on this route/model.
+
+        ONLY OpenRouter understands the unified object — it is their
+        normalization layer (effort → Anthropic/Gemini thinking budgets, OpenAI
+        native effort, on/off for DeepSeek/Qwen3), so per-model effort quirks
+        are their job, not ours (hermes trusts it the same way). Direct
+        endpoints each speak their own dialect: DeepSeek native picks thinking
+        by MODEL NAME (deepseek-reasoner vs deepseek-chat) and rejects unknown
+        params, so direct routes get nothing. If we ever add direct routes
+        with per-model effort menus (GitHub Models / LM Studio), follow
+        hermes: a per-model supported-efforts table + clamping.
+        """
         base = (self.cfg.base_url or "").lower()
         model = (self.cfg.model or "").lower()
-        if "openrouter" in base:
-            return model.startswith(_REASONING_PREFIXES)
-        return "deepseek" in model or "api.deepseek.com" in base
+        return "openrouter" in base and model.startswith(_REASONING_PREFIXES)
 
     def reasoning_echoback_required(self) -> bool:
         """Some thinking modes reject replayed assistant tool-call messages that
