@@ -5,7 +5,6 @@ import asyncio
 import os
 import queue
 import random
-import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -38,16 +37,12 @@ from .cleanup import clean_runtime_sandbox
 from .obs import broker, get_logger
 from .context import estimate_tokens
 from .config import ROOT
-from .llm import DIM_OFF, DIM_ON, THINK_OFF, THINK_ON, LLMClient
+from .llm import LLMClient
 from .presence import MODES, normalize_mode
+from .protocol import Notice, TextDelta, ThinkDelta, ToolEnd, ToolStart
 from .runner import run_terminal
 from .settings import PRESETS, Settings, config_path, load_settings, save_settings
 from .themes import TuiTheme, load_theme
-
-# Splits streamed text on the in-band machinery markers (see llm.py):
-# \x01/\x02 = dim (tool activity, always shown dimmed),
-# \x03/\x04 = think (hidden by default behind the ✶ indicator).
-_DIM_SPLIT = re.compile("(\x01|\x02|\x03|\x04)")
 
 _log = get_logger("tui")
 
@@ -537,7 +532,7 @@ class LunaMothTUI(App):
         self.skin = load_theme(self.settings.tui_theme_path)
         self.agent = LunaMothAgent(self.settings)
         self.session = self.agent.make_session()
-        self.output: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.output: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self.current_thread: threading.Thread | None = None
         self.interrupt_event = threading.Event()
         self.worker_lock = threading.Lock()
@@ -879,36 +874,37 @@ class LunaMothTUI(App):
         # Accumulate only; the actual repaint is throttled in _flush_display (~16fps).
         # Per-token widget updates are what made the pane thrash; batching one repaint
         # per frame lets Textual's compositor diff just the new cells (no flicker).
-        #
-        # Text may carry in-band machinery markers (see llm.py). Tool activity
-        # (dim spans) always renders dimmed; thinking (think spans) is HIDDEN by
-        # default — counted for the ✶ indicator, revealed by /thinking on.
+        # Styling decisions (dim machinery, hidden thinking) happen in
+        # _handle_event — by the time text lands here it is already plain.
         if not text:
             return
-        current = style
-        for part in _DIM_SPLIT.split(text):
-            if part == DIM_ON:
-                current = "dim"
-                continue
-            if part == THINK_ON:
-                current = "think"
-                continue
-            if part in (DIM_OFF, THINK_OFF):
-                current = style
-                continue
-            if not part:
-                continue
-            if current == "think":
-                self._think_tokens += estimate_tokens(part)
-                if not self.show_thinking:
-                    continue  # the ✶ indicator is the only trace
-                self.display_segments.append(("dim", part))
-            else:
-                self.display_segments.append((current, part))
+        self.display_segments.append((style, text))
         total = sum(len(t) for _, t in self.display_segments)
         while total > 60000 and self.display_segments:  # bound UI memory
             total -= len(self.display_segments.pop(0)[1])
         self._display_dirty = True
+
+    def _handle_event(self, ev: object) -> None:
+        """Render one protocol event — the seam where backend facts become looks.
+
+        TextDelta = the chara's prose; ThinkDelta = hidden behind the ✶ indicator
+        unless /thinking on; ToolEnd/Notice = dimmed machinery lines; ToolStart
+        only feeds the status line."""
+        if isinstance(ev, TextDelta):
+            self._recv_tokens += estimate_tokens(ev.text)
+            self._append_display(ev.text)
+        elif isinstance(ev, ThinkDelta):
+            self._think_tokens += estimate_tokens(ev.text)
+            if self.show_thinking:
+                self._append_display(ev.text, style="dim")
+        elif isinstance(ev, ToolStart):
+            self._activity = f"working: {ev.name}"
+        elif isinstance(ev, ToolEnd):
+            if ev.summary:
+                self._append_display(f"\n{ev.summary}\n", style="dim")
+        elif isinstance(ev, Notice):
+            if ev.text:
+                self._append_display(f"\n{ev.text}\n", style="dim")
 
     def _display_tail(self, n: int = 2) -> str:
         """The last n characters currently on the display (for spacing checks)."""
@@ -1091,11 +1087,11 @@ class LunaMothTUI(App):
             chunks = self.agent.stream_handle(job.text or "", self.session)
         self.output.put(("prefix", prefix))
         try:
-            for chunk in chunks:
+            for ev in chunks:
                 if self.interrupt_event.is_set():
                     self.output.put(("interrupt", "↯ interrupt — operator input overrides current cycle"))
                     break
-                self.output.put(("chunk", chunk))
+                self.output.put(("event", ev))
         except Exception as e:
             _log.exception("stream worker failed (job=%s)", job.kind)
             self.output.put(("error", f"stream error: {e}"))
@@ -1115,9 +1111,8 @@ class LunaMothTUI(App):
                 if self.display_segments and self._display_tail() != "\n\n":
                     self._append_display("\n")
                 self._append_display(text)
-            elif kind == "chunk":
-                self._recv_tokens += estimate_tokens(text)
-                self._append_display(text)
+            elif kind == "event":
+                self._handle_event(text)
             elif kind == "interrupt":
                 # System notice, not character speech -> console, dimmed.
                 self._console(text, "grey42")

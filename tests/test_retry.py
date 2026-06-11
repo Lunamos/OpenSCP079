@@ -43,7 +43,8 @@ def test_transient_failure_retries_then_succeeds(monkeypatch, no_sleep):
     monkeypatch.setattr(urllib.request, "urlopen", flaky)
     notices, resp = _drive(_client()._connect_with_retry("https://x.test/v1/chat/completions", b"{}", 1))
     assert resp == "RESPONSE"
-    assert len(notices) == 2 and all("retry" in n for n in notices)
+    # Retries surface as typed Notice events (frontends render them dimmed).
+    assert len(notices) == 2 and all(n.kind == "retry" and "retry" in n.text for n in notices)
 
 
 def test_gives_up_after_five_retries(monkeypatch, no_sleep):

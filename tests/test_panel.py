@@ -61,14 +61,19 @@ def test_panel_routing(tui_env):
             assert app._panel_view() == "telemetry"
             assert app.focused is app.input
 
-            # Thinking is hidden by default: think spans never reach the display,
-            # but they feed the ✶ indicator's token counter. Tool dim spans show.
-            from lunamoth.llm import dim, think
+            # Thinking is hidden by default: ThinkDelta events never reach the
+            # display, but they feed the ✶ indicator's token counter. ToolEnd
+            # summaries render dimmed.
+            from lunamoth.protocol import TextDelta, ThinkDelta, ToolEnd
             before = len(app.display_segments)
-            app._append_display(think("secret pondering") + "spoken words" + dim("⚙ tool ✓"))
+            for ev in (ThinkDelta("secret pondering"), TextDelta("spoken words"),
+                       ToolEnd("tool", summary="⚙ tool ✓")):
+                app._handle_event(ev)
             shown = "".join(t for _, t in app.display_segments[before:])
             assert "secret pondering" not in shown
             assert "spoken words" in shown and "⚙ tool ✓" in shown
+            dim_chunks = [t for s, t in app.display_segments[before:] if s == "dim"]
+            assert any("⚙ tool ✓" in t for t in dim_chunks)  # machinery renders dim
             assert app._think_tokens > 0
 
     asyncio.run(scenario())

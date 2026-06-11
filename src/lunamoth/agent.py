@@ -17,7 +17,8 @@ from .obs import get_logger, setup_logging
 from .config import ROOT, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
 from .goals import GoalStore
-from .llm import LLMClient, strip_dim
+from .llm import LLMClient
+from .protocol import MUSE, TextDelta
 from .memory import MemoryLimits, MemoryStore
 from .persona import (
     DEFAULT_NAME,
@@ -311,24 +312,25 @@ class LunaMothAgent:
         # Commit the event line BEFORE streaming (interrupt-safe).
         session.context.add("system", event_text)
         agent_loop = self._agent_loop_active()
-        chunks: list[str] = []
+        speech: list[str] = []  # TextDelta only — events make machinery/speech explicit
         committed = False
         try:
             stream = self._reply_stream(
                 event_text, self._memory_text(), status, self._context_view(session),
                 in_context=True, record=session.context.add_message,
             )
-            for chunk in stream:
-                chunks.append(chunk)
-                yield chunk
+            for ev in stream:
+                if isinstance(ev, TextDelta):
+                    speech.append(ev.text)
+                yield ev
             committed = True
             if not agent_loop:
-                reply = strip_dim("".join(chunks)).strip()
+                reply = "".join(speech).strip()
                 if reply:
                     session.context.add("assistant", reply)
         finally:
             if not committed and not agent_loop:
-                partial = strip_dim("".join(chunks)).strip()
+                partial = "".join(speech).strip()
                 if partial:
                     session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
 
@@ -439,14 +441,17 @@ class LunaMothAgent:
     def _reply_stream(
         self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
         *, in_context: bool = True, record=None, reasoning: "str | None" = None,
+        channel: str = "say",
     ):
         """Pick the tool-enabled agent loop or a plain stream depending on pack/backend."""
         if self._agent_loop_active():
             return self.llm.stream_agent(
                 user_text, memory, status, context, self.tools.schemas(), self._execute_tool,
-                record=record, in_context=in_context, reasoning=reasoning,
+                record=record, in_context=in_context, reasoning=reasoning, channel=channel,
             )
-        return self.llm.stream_complete(user_text, memory, status, context, in_context=in_context, reasoning=reasoning)
+        return self.llm.stream_complete(
+            user_text, memory, status, context, in_context=in_context, reasoning=reasoning, channel=channel,
+        )
 
     def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, str]:
         """Run one native tool call; return a compact display line + the result fed back to the model."""
@@ -475,16 +480,16 @@ class LunaMothAgent:
             err = str(result.get("error", ""))
             display = f"⚙ {name} ✗ {_abbrev(err, 160)}"
             content = f"ERROR: {err}"
-        return {"display": display, "content": content}
+        return {"display": display, "content": content, "ok": bool(result.get("ok"))}
 
     def stream_handle(self, text: str, session: Session):
         text = text.strip()
         self.audit.write("user_message", text=text[:1000], streaming=True)
         if not text:
-            yield "..."
+            yield TextDelta("...")
             return
         if text.startswith("/"):
-            yield self._command(text, session)
+            yield TextDelta(self._command(text, session))
             return
         status = self.state.load()
         memory_text = self._memory_text()
@@ -492,26 +497,27 @@ class LunaMothAgent:
         # must never lose the instruction that caused it.
         session.context.add("user", text)
         agent_loop = self._agent_loop_active()
-        chunks: list[str] = []
+        speech: list[str] = []
         committed = False
         try:
             stream = self._reply_stream(
                 text, memory_text, status, self._context_view(session),
                 in_context=True, record=session.context.add_message,
             )
-            for chunk in stream:
-                chunks.append(chunk)
-                yield chunk
+            for ev in stream:
+                if isinstance(ev, TextDelta):
+                    speech.append(ev.text)
+                yield ev
             committed = True
             if not agent_loop:
-                reply = strip_dim("".join(chunks)).strip()
+                reply = "".join(speech).strip()
                 if reply:
                     session.context.add("assistant", reply)
         finally:
             # Operator interrupt (the UI abandoned this generator): in the plain
             # path WE must keep the partial; the agent loop keeps its own.
             if not committed and not agent_loop:
-                partial = strip_dim("".join(chunks)).strip()
+                partial = "".join(speech).strip()
                 if partial:
                     session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
 
@@ -533,7 +539,7 @@ class LunaMothAgent:
         status = self.state.load()
         cycle = session.ticks
         agent_loop = self._agent_loop_active()
-        chunks: list[str] = []
+        speech: list[str] = []
         committed = False
 
         def commit(interrupted: bool) -> None:
@@ -541,7 +547,7 @@ class LunaMothAgent:
             if committed:
                 return
             committed = True
-            thought = strip_dim("".join(chunks)).strip()
+            thought = "".join(speech).strip()
             if thought:
                 session.thoughts.append(thought)
                 session.thoughts[:] = session.thoughts[-self.thought_cfg.max_session_thoughts:]
@@ -563,12 +569,13 @@ class LunaMothAgent:
                 # failed request is a failed request, never fabricated output.
                 stream = self._reply_stream(
                     "", self._memory_text(), status, self._context_view(session),
-                    in_context=False, record=self._record_think(session),
+                    in_context=False, record=self._record_think(session), channel=MUSE,
                 )
                 try:
-                    for chunk in stream:
-                        chunks.append(chunk)
-                        yield chunk
+                    for ev in stream:
+                        if isinstance(ev, TextDelta):
+                            speech.append(ev.text)
+                        yield ev
                 except Exception as e:
                     self.audit.write("llm_thought_error", error=str(e)[:500])
                     raise
@@ -578,12 +585,11 @@ class LunaMothAgent:
 
     def handle(self, text: str, session: Session) -> str:
         # Non-streaming convenience (used by tests): drive the streaming path.
-        return "".join(self.stream_handle(text, session)).strip()
+        return "".join(ev.text for ev in self.stream_handle(text, session) if isinstance(ev, TextDelta)).strip()
 
     def think(self, session: Session) -> str:
         # Non-streaming convenience (used by tests).
-        thought = "".join(self.stream_think(session)).strip()
-        return thought
+        return "".join(ev.text for ev in self.stream_think(session) if isinstance(ev, TextDelta)).strip()
 
     def _command(self, text: str, session: Session) -> str:
         parts = text.split(maxsplit=2)

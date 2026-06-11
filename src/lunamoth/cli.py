@@ -274,6 +274,35 @@ def cmd_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """Headless one-shot (Claude Code's `-p`): send one message, print the reply.
+
+    --stream-json emits one protocol event per line (JSONL) — the same wire
+    format the future server/desktop clients consume; scripts can pipe it."""
+    meta = S.load_session(args.name)
+    if meta is None:
+        print(f"error: no chara named {args.name!r} (see `lunamoth ls`)", file=sys.stderr)
+        return 1
+    if not meta.is_configured():
+        print(f"error: chara {args.name!r} isn't set up yet — `lunamoth attach {args.name}` first", file=sys.stderr)
+        return 1
+    _activate(meta)
+    from .agent import LunaMothAgent
+    from .protocol import TextDelta, to_json
+
+    agent = LunaMothAgent()
+    session = agent.make_session()
+    for ev in agent.stream_handle(args.prompt, session):
+        if args.stream_json:
+            sys.stdout.write(to_json(ev) + "\n")
+        elif isinstance(ev, TextDelta):
+            sys.stdout.write(ev.text)
+        sys.stdout.flush()
+    if not args.stream_json:
+        print()
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     meta = S.load_session(args.name) or (S.ensure_default_session() if args.name == S.DEFAULT_SESSION else None)
     if meta is None:
@@ -455,6 +484,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name")
     sp.add_argument("-y", "--yes", action="store_true")
     sp.set_defaults(func=cmd_rm)
+
+    sp = sub.add_parser("run", help="headless one-shot: -p sends a message and prints the reply")
+    sp.add_argument("name", nargs="?", default=S.DEFAULT_SESSION)
+    sp.add_argument("-p", "--prompt", required=True, help="the message to send")
+    sp.add_argument("--stream-json", action="store_true", help="one protocol event per line (JSONL wire format)")
+    sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("setup", help="(re)run the setup wizard")
     sp.add_argument("name", nargs="?", default=S.DEFAULT_SESSION)

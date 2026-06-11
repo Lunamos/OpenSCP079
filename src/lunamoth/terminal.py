@@ -6,18 +6,10 @@ import sys
 import time
 from dataclasses import dataclass
 
-import re
-
 from .agent import LunaMothAgent
 from .cleanup import clean_runtime_sandbox
-from .llm import DIM_OFF, DIM_ON
 from .presence import normalize_mode
-
-# Thinking spans are hidden in plain mode (the TUI has the ✶ indicator and the
-# /thinking toggle; legacy mode just stays quiet about it).
-_THINK_SPAN = re.compile("\x03.*?\x04", re.S)
-
-
+from .protocol import Notice, TextDelta, ToolEnd
 from .themes import LUNAMOTH_BANNER
 
 BANNER = (
@@ -57,19 +49,24 @@ def _prompt() -> None:
     print('\noperator> ', end='', flush=True)
 
 
-def _stream_with_interrupt(prefix: str, chunks, allow_interrupt: bool = True) -> tuple[str, str | None]:
+def _stream_with_interrupt(prefix: str, events, allow_interrupt: bool = True) -> tuple[str, str | None]:
     print(prefix, end='', flush=True)
     full: list[str] = []
-    for chunk in chunks:
+    for ev in events:
         if allow_interrupt and _stdin_line_ready():
             line = _read_line()
             print("\n\x1b[31m[INTERRUPT: operator input overrides current cycle]\x1b[0m", flush=True)
             return "".join(full), line
-        # Thinking spans are dropped; tool-activity dim markers -> ANSI dim, so
-        # the machinery never reads as character speech.
-        visible = _THINK_SPAN.sub("", chunk).replace(DIM_ON, "\x1b[2m").replace(DIM_OFF, "\x1b[0m")
-        print(visible, end='', flush=True)
-        full.append(chunk)
+        # Plain-mode rendering policy: prose prints as-is, tool results and
+        # notices print ANSI-dim, thinking stays silent (the TUI has the ✶
+        # indicator; legacy mode just doesn't mention it).
+        if isinstance(ev, TextDelta):
+            print(ev.text, end='', flush=True)
+            full.append(ev.text)
+        elif isinstance(ev, ToolEnd) and ev.summary:
+            print(f"\n\x1b[2m{ev.summary}\x1b[0m\n", end='', flush=True)
+        elif isinstance(ev, Notice) and ev.text:
+            print(f"\n\x1b[2m{ev.text}\x1b[0m\n", end='', flush=True)
     print('', flush=True)
     return "".join(full), None
 

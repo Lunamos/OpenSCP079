@@ -91,14 +91,30 @@ def test_interrupted_think_cycle_is_committed(agent):
     assert thinks and thinks[-1]["content"].strip()  # partial idle output committed
 
 
-def test_strip_dim_removes_machinery_spans():
-    from lunamoth.llm import DIM_OFF, DIM_ON, THINK_OFF, THINK_ON, dim, strip_dim, think
+def test_commit_keeps_speech_and_drops_machinery_events(agent, monkeypatch):
+    # Typed events replace the old in-band markers: only TextDelta is speech;
+    # thinking and tool chatter must never leak into the committed context.
+    from lunamoth.protocol import Notice, TextDelta, ThinkDelta, ToolEnd
 
-    mixed = think("pondering…") + "你好。" + "\n" + dim("⚙ terminal ✓") + "\n再见。"
-    assert strip_dim(mixed) == "你好。\n\n再见。"
-    cleaned = strip_dim(mixed)
-    for marker in (DIM_ON, DIM_OFF, THINK_ON, THINK_OFF):
-        assert marker not in cleaned
+    a = agent()
+    a.transcript.reset()
+    s = a.make_session()
+
+    def mixed_stream(*_args, **_kw):
+        def gen():
+            yield ThinkDelta("pondering…")
+            yield TextDelta("你好。")
+            yield ToolEnd("terminal", summary="⚙ terminal ✓")
+            yield Notice("retry", "⚠ retry 1/5")
+            yield TextDelta("再见。")
+
+        return gen()
+
+    monkeypatch.setattr(a, "_reply_stream", mixed_stream)
+    list(a.stream_handle("打个招呼", s))
+    reply = [c for r, c in s.context.pairs() if r == "assistant"][-1]
+    assert reply == "你好。再见。"
+    assert "pondering" not in reply and "terminal" not in reply and "retry" not in reply
 
 
 def test_reasoning_policy_openrouter_and_deepseek():

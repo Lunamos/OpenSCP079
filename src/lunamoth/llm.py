@@ -2,47 +2,23 @@ from __future__ import annotations
 
 import json
 import random
-import re
 import time
 from typing import Any, Callable, Iterator
 
 from .config import LLMConfig
 from .obs import get_logger
 from .persona import fallback_persona
+from .protocol import Notice, TextDelta, ThinkDelta, ToolEnd, ToolStart
 
 _log = get_logger("llm")
 
 LIVE_PROVIDERS = {"openai_compatible", "openai", "ollama", "openrouter"}
 
-# In-band style markers for "machinery" output (reasoning, tool activity):
-# UIs render the wrapped span dimmed, the way hermes / Claude Code grey out
-# everything that is not character speech. Each yielded chunk carries balanced
-# markers, and strip_dim() removes the spans before anything is committed to
-# the conversation context.
-DIM_ON = "\x01"
-DIM_OFF = "\x02"
-# Thinking gets its own channel: tool activity (dim) is always shown dimmed,
-# while reasoning (think) is HIDDEN by default — the UI shows a Claude-style
-# "✶ thinking…" indicator instead, and /thinking on reveals the text.
-THINK_ON = "\x03"
-THINK_OFF = "\x04"
-_MACHINERY_SPAN = re.compile("[\x01\x03].*?[\x02\x04]", re.S)
-
-
-def dim(text: str) -> str:
-    return f"{DIM_ON}{text}{DIM_OFF}"
-
-
-def think(text: str) -> str:
-    return f"{THINK_ON}{text}{THINK_OFF}"
-
-
-def strip_dim(text: str) -> str:
-    """Remove machinery spans (reasoning + tool chatter) — what remains is speech."""
-    out = _MACHINERY_SPAN.sub("", text)
-    for marker in (DIM_ON, DIM_OFF, THINK_ON, THINK_OFF):
-        out = out.replace(marker, "")
-    return out
+# All streaming generators here yield protocol events (protocol/events.py),
+# never styled strings: speech is TextDelta, reasoning is ThinkDelta, tool
+# activity is ToolStart/ToolEnd, retries and truncations are Notice. How each
+# is drawn (dimmed, hidden behind a ✶ indicator, dropped) is the frontend's
+# decision — the hermes stream_events model.
 
 
 # Model families that accept OpenRouter's unified `reasoning` request param
@@ -161,7 +137,7 @@ class LLMClient:
                 _log.error("gave up after %d retries: %s", self._RETRY_LIMIT, err)
                 raise RuntimeError(f"{err} — gave up after {self._RETRY_LIMIT} retries")
             _log.warning("connect retry %d/%d: %s", attempt, self._RETRY_LIMIT, err)
-            yield dim(f"\n⚠ {err} — retry {attempt}/{self._RETRY_LIMIT} in {int(self._RETRY_DELAY)}s\n")
+            yield Notice("retry", f"⚠ {err} — retry {attempt}/{self._RETRY_LIMIT} in {int(self._RETRY_DELAY)}s")
             time.sleep(self._RETRY_DELAY)
 
     def raw_complete(self, messages: list[dict[str, Any]], max_tokens: int = 1024, timeout: float = 60.0) -> str:
@@ -194,15 +170,15 @@ class LLMClient:
 
     def stream_complete(
         self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
-        in_context: bool = True, reasoning: "str | None" = None,
-    ) -> Iterator[str]:
+        in_context: bool = True, reasoning: "str | None" = None, channel: str = "say",
+    ) -> "Iterator[Any]":
         if self.is_live():
-            yield from self._openai_compatible_stream(user_text, memory, status, context, in_context, reasoning)
+            yield from self._openai_compatible_stream(user_text, memory, status, context, in_context, reasoning, channel)
             return
         # Fake streaming for mock mode.
         text = self._mock(user_text, memory, status)
         for ch in text:
-            yield ch
+            yield TextDelta(ch, channel)
 
     def _messages(
         self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
@@ -285,8 +261,8 @@ class LLMClient:
 
     def _openai_compatible_stream(
         self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
-        in_context: bool = True, reasoning: "str | None" = None,
-    ) -> Iterator[str]:
+        in_context: bool = True, reasoning: "str | None" = None, channel: str = "say",
+    ) -> "Iterator[Any]":
         url = f"{self.cfg.base_url}/chat/completions"
         body = self._reasoning_body({
             "model": self.cfg.model,
@@ -314,20 +290,20 @@ class LLMClient:
                     delta = payload.get("choices", [{}])[0].get("delta", {})
                     thinking = delta.get("reasoning_content") or delta.get("reasoning")
                     if thinking:
-                        # Think channel: hidden by default (the UI shows a
-                        # "✶ thinking…" indicator); newlines ride inside the
-                        # spans so nothing leaks when it is hidden.
+                        # Reasoning travels as ThinkDelta; the flow-transition
+                        # newlines ride in the same event type so a frontend
+                        # that hides thinking leaks nothing.
                         if flow != "think":
                             if flow == "speech":
-                                yield think("\n")
+                                yield ThinkDelta("\n")
                             flow = "think"
-                        yield think(thinking)
+                        yield ThinkDelta(thinking)
                     chunk = delta.get("content")
                     if chunk:
                         if flow == "think":
-                            yield think("\n")
+                            yield ThinkDelta("\n")
                         flow = "speech"
-                        yield chunk
+                        yield TextDelta(chunk, channel)
 
     # ---- native function-calling agent loop ---------------------------------------
 
@@ -348,13 +324,13 @@ class LLMClient:
     def stream_agent(
         self, user_text, memory, status, context, tools, execute,
         record=None, max_steps: int = 8, in_context: bool = True,
-        reasoning: "str | None" = None,
+        reasoning: "str | None" = None, channel: str = "say",
     ):
         """Stream a reply that may call tools (modern OpenAI-style function calling).
 
-        Yields text chunks for the UI. `execute(tc)` runs one tool call and returns
-        {"display": ..., "content": ...}; results are fed back until the model
-        produces a final answer.
+        Yields protocol events for the UI. `execute(tc)` runs one tool call and
+        returns {"display": ..., "content": ..., "ok": ...}; results are fed back
+        until the model produces a final answer.
 
         `record(msg)` commits each message (assistant incl. tool_calls and
         reasoning_content, tool results, system continuation notes) to the DURABLE
@@ -365,7 +341,7 @@ class LLMClient:
         """
         if not self.is_live():
             for ch in self._mock(user_text, memory, status):
-                yield ch
+                yield TextDelta(ch, channel)
             return
         record = record or (lambda _msg: None)
         messages = self._messages(user_text, memory, status, context, in_context=in_context)
@@ -375,7 +351,7 @@ class LLMClient:
             for step in range(max_steps):
                 acc.clear()
                 t0 = time.monotonic()
-                tool_calls, thinking_text, finish = yield from self._stream_turn(messages, tools, acc, reasoning)
+                tool_calls, thinking_text, finish = yield from self._stream_turn(messages, tools, acc, reasoning, channel)
                 text = "".join(acc).strip()
                 acc.clear()  # committed below — must not re-commit as "interrupted"
                 truncated = finish == "length"
@@ -403,7 +379,7 @@ class LLMClient:
                     note = {"role": "system", "content": self._SPLIT_TOOLS_NOTE}
                     record(note)
                     messages.append(note)
-                    yield "\n" + dim("⚠ tool call truncated by the output limit — asking for smaller pieces") + "\n"
+                    yield Notice("truncation", "⚠ tool call truncated by the output limit — asking for smaller pieces")
                     continue
 
                 a_msg = {"role": "assistant", "content": text or None}
@@ -417,11 +393,17 @@ class LLMClient:
                 messages.append(a_msg if echo else {k: v for k, v in a_msg.items() if k != "reasoning_content"})
 
                 if tool_calls:
-                    for tc in tool_calls:
+                    for i, tc in enumerate(tool_calls):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        yield ToolStart(name, preview=str(fn.get("arguments") or "")[:80], index=i)
+                        tool_t0 = time.monotonic()
                         res = execute(tc)
-                        display = res.get("display")
-                        if display:
-                            yield "\n" + dim(display) + "\n"
+                        yield ToolEnd(
+                            name, ok=bool(res.get("ok", True)),
+                            duration=time.monotonic() - tool_t0,
+                            summary=str(res.get("display") or ""), index=i,
+                        )
                         t_msg = {"role": "tool", "tool_call_id": tc.get("id") or "", "content": res.get("content", "")}
                         record(t_msg)
                         messages.append(t_msg)
@@ -431,7 +413,7 @@ class LLMClient:
                     note = {"role": "system", "content": self._CONTINUE_NOTE}
                     record(note)
                     messages.append(note)
-                    yield "\n"
+                    yield TextDelta("\n", channel)
                     continue
 
                 finished = True
@@ -446,8 +428,8 @@ class LLMClient:
                     _log.info("stream abandoned mid-turn; committed %d partial chars", len(partial))
                     record({"role": "assistant", "content": partial + self.INTERRUPT_MARK})
 
-    def _stream_turn(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, text_out: list[str], reasoning: "str | None" = None):
-        """Stream one assistant turn. Yields content chunks; accumulates visible
+    def _stream_turn(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, text_out: list[str], reasoning: "str | None" = None, channel: str = "say"):
+        """Stream one assistant turn. Yields protocol events; accumulates visible
         text into `text_out` (caller-owned, so an abandoned generator can still
         read the partial). Returns (tool_calls, reasoning, finish_reason).
         """
@@ -492,21 +474,22 @@ class LLMClient:
                     thinking = delta.get("reasoning_content") or delta.get("reasoning")
                     if thinking:
                         reasoning_parts.append(thinking)
-                        # Think channel: hidden by default behind the "✶ thinking…"
-                        # indicator; /thinking on reveals it dimmed. Newlines ride
-                        # inside the spans so nothing leaks when hidden.
+                        # ThinkDelta: hidden by default behind the "✶ thinking…"
+                        # indicator; /thinking on reveals it dimmed. The flow
+                        # newlines travel as ThinkDelta too, so nothing leaks
+                        # when a frontend hides thinking.
                         if flow != "think":
                             if flow == "speech":
-                                yield think("\n")
+                                yield ThinkDelta("\n")
                             flow = "think"
-                        yield think(thinking)
+                        yield ThinkDelta(thinking)
                     chunk = delta.get("content")
                     if chunk:
                         if flow == "think":
-                            yield think("\n")
+                            yield ThinkDelta("\n")
                         flow = "speech"
                         text_out.append(chunk)
-                        yield chunk
+                        yield TextDelta(chunk, channel)
                     for tcd in delta.get("tool_calls") or []:
                         idx = tcd.get("index", 0)
                         slot = acc.setdefault(idx, {"id": "", "name": "", "args": ""})
