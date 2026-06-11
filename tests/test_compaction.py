@@ -64,6 +64,19 @@ def test_iterative_summary_folds_previous():
     assert "earlier summary" in serialized and "older facts here" in serialized
 
 
+def test_serialize_prunes_tool_outputs_without_mutating_head():
+    head = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "line\n" * 200},
+    ]
+    serialized = compaction._serialize(head)
+    assert "terminal output pruned" in serialized
+    assert len(serialized) < len(head[1]["content"])
+    assert head[1]["content"] == "line\n" * 200  # pruning is only for the summary prompt copy
+
+
 def test_offline_and_empty_summary_are_noops():
     ctx = ContextBuffer(max_tokens=10_000_000)
     _fill(ctx, 40, 500)

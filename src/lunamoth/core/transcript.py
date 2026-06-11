@@ -142,6 +142,9 @@ class TranscriptStore:
         """Persist one context message dict (the ContextBuffer persist hook)."""
         role = str(msg.get("role", ""))
         structured = any(k in msg for k in ("tool_calls", "tool_call_id", "reasoning_content", "name"))
+        if msg.get("kind") == "summary":
+            self.append(role, str(msg.get("content") or ""), kind="summary")
+            return
         if structured:
             try:
                 self.append(role, json.dumps(msg, ensure_ascii=False), kind="struct")
@@ -157,15 +160,29 @@ class TranscriptStore:
             return []
         try:
             with self._connect() as conn:
+                epoch = self.epoch()
+                row = conn.execute(
+                    "SELECT MAX(id) FROM messages WHERE epoch=? AND kind='summary'",
+                    (epoch,),
+                ).fetchone()
+                summary_id = int(row[0]) if row and row[0] else None
                 sql = (
                     "SELECT role, content, kind FROM messages "
-                    "WHERE epoch=? AND kind IN ('chat','think','struct') ORDER BY id"
+                    "WHERE epoch=? AND kind IN ('chat','think','struct','summary')"
                 )
-                rows = conn.execute(sql, (self.epoch(),)).fetchall()
+                params: tuple[int, ...] | tuple[int, int] = (epoch,)
+                if summary_id is not None:
+                    sql += " AND id>=?"
+                    params = (epoch, summary_id)
+                sql += " ORDER BY id"
+                rows = conn.execute(sql, params).fetchall()
         except (sqlite3.Error, OSError):
             return []
         if max_messages > 0:
-            rows = rows[-max_messages:]
+            if rows and rows[0][2] == "summary" and len(rows) > max_messages:
+                rows = [rows[0]] if max_messages <= 1 else [rows[0]] + rows[-(max_messages - 1):]
+            else:
+                rows = rows[-max_messages:]
         out: list[dict] = []
         for role, content, kind in rows:
             if kind == "struct":
@@ -179,6 +196,8 @@ class TranscriptStore:
                 out.append({"role": str(role), "content": str(content)})
             elif kind == "think":
                 out.append({"role": str(role), "content": str(content), "kind": "think"})
+            elif kind == "summary":
+                out.append({"role": str(role), "content": str(content), "kind": "summary"})
             else:
                 out.append({"role": str(role), "content": str(content)})
         return out
@@ -203,7 +222,7 @@ class TranscriptStore:
         try:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE epoch=? AND kind IN ('chat','think','struct')",
+                    "SELECT COUNT(*) FROM messages WHERE epoch=? AND kind IN ('chat','think','struct','summary')",
                     (self.epoch(),),
                 ).fetchone()
             return int(row[0]) if row else 0
