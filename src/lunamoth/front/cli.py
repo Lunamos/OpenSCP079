@@ -355,6 +355,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
         meta.clear_running()
 
 
+def cmd_desktop(args: argparse.Namespace) -> int:
+    """The desktop app: hub gateway + web renderer in the default browser.
+
+    The renderer is a protocol client (Hermes Desktop's shape): board-level
+    RPC on /hub, and each open chat pipes to a child `serve <name> --stdio`."""
+    from ..server.desktop import free_port, serve_desktop
+
+    if getattr(args, "debug", False):
+        os.environ["LUNAMOTH_DEBUG"] = "1"
+    host = "127.0.0.1"
+    http_port = args.port or free_port(host)
+    ws_port = args.ws_port or free_port(host)
+    token = args.token or secrets.token_urlsafe(24)
+    return serve_desktop(host, http_port, ws_port, token, open_browser=not args.no_open)
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     meta = S.load_session(args.name) or (S.ensure_default_session() if args.name == S.DEFAULT_SESSION else None)
     if meta is None:
@@ -551,6 +567,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--token", default="", help="WebSocket bearer token (auto-generated if omitted)")
     sp.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics in the chara's sandbox/logs/")
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("desktop", help="open the desktop app (web renderer + hub gateway)")
+    sp.add_argument("--port", type=int, default=0, help="HTTP port for the renderer (default: auto)")
+    sp.add_argument("--ws-port", type=int, default=0, help="WebSocket port for the gateway (default: auto)")
+    sp.add_argument("--token", default="", help="gateway token (auto-generated if omitted)")
+    sp.add_argument("--no-open", action="store_true", help="don't open the browser")
+    sp.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics")
+    sp.set_defaults(func=cmd_desktop)
 
     sp = sub.add_parser("setup", help="(re)run the setup wizard")
     sp.add_argument("name", nargs="?", default=S.DEFAULT_SESSION)
