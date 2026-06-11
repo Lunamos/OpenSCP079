@@ -14,7 +14,12 @@
     "write_log",
     "request_permission",
     "add_goal",
-    "set_goal_status"
+    "set_goal_status",
+    "read_skill",
+    "create_skill"
   ],
-  "note": "Network is OFF by default; the operator can enable it at runtime (TUI: /net on), or you can ask for it with request_permission while the operator is present."
+  "note": "Network is OFF by default; the operator can enable it at runtime (TUI: /net on), or you can ask for it with request_permission while the operator is present.",
+  "mcp_servers": [
+    "*"
+  ]
 }

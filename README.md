@@ -48,6 +48,8 @@ Each unchecked item below is scoped to be independently completable — it lists
 
 - [x] **Hermes-grade context management** — full message dicts in the durable history (assistant tool calls, tool results and reasoning survive restarts, so the chara remembers what it ran); interrupts commit the partial turn and never lose your instruction; output-limit truncation gets explicit continue/split-it prompts instead of silent cuts; old idle monologues age out of the API view so self-talk can't bury your last instruction
 
+- [x] **Skills, self-written** — SKILL.md know-how (hermes/Anthropic format) with progressive disclosure: the index rides the prompt, `read_skill` fetches full text, and the chara distills its OWN skills with `create_skill` (its `workspace/skills/` shadows `~/.lunamoth/skills/` and bundled ones)
+- [x] **MCP client** — drop a Claude-Code-format `mcp.json` next to the chara's config (stdio servers); tools join the gateway as `mcp__server__tool` with the same audit trail, packs opt in via `mcp_servers`. Note: MCP servers run OUTSIDE the sandbox jail — configuring one is a trust decision
 - [x] **Goal-driven charas** — a persistent per-chara goal list (`/goal` for the operator's ⭑ goals; `add_goal`/`set_goal_status` tools for the chara's own) steers every turn and gives unattended time its direction; completion is self-reported under the honesty rules — no SillyTavern-Objective-style double API calls
 - [x] **Honest failure policy** — transient connection failures retry every 5s up to 5 times (Claude-Code style, with dim retry notices), then the error surfaces as-is; permanent errors (auth, bad request) surface immediately. NO fallback model and NO fabricated output anywhere — a failed request is a failed request
 
@@ -55,7 +57,6 @@ Each unchecked item below is scoped to be independently completable — it lists
 
 - [ ] **World info parity** — close the gap to SillyTavern activation: recursive scanning, token budget, sticky/cooldown/delay, insertion position/depth, probability, case-sensitive & whole-word matching. *Touches: `worldinfo.py` (+ its call sites' signatures stay stable).*
 - [ ] **Declarative tool registry** — replace hardcoded `ToolGateway.tool_*` methods + inline schemas with Hermes-style registration (name, schema, handler, availability check), so new tools are one self-contained module. *Touches: `tools.py`, new `tools/` package.*
-- [ ] **MCP client support** — let a tool pack reference external MCP servers; their tools join the gateway under the same allowlist/audit rules. *Touches: new `mcp.py`, `toolpacks.py`.*
 
 **Remote access** (ordered — each builds on the previous)
 
@@ -171,7 +172,7 @@ lunamoth --patience 4     # pause between its spontaneous cycles (live mode)
 lunamoth --plain          # legacy plain terminal mode
 ```
 
-In-session: `/help`, `/goal`, `/status`, `/memory`, `/files`, `/mode live|chat`, `/reasoning`, `/net on|off`, `/allow-dir <path>`, `/patience <s>`, `/panel`, `/theme`, `/settings`, `/clear`, `/exit` — verbose output lights up the right-side **spotlight panel** (telemetry / memory / file tree with click-to-preview / operator terminal / help), so the console stays a clean chat log. `! <cmd>` runs YOUR shell command in the chara's sandbox (same jail, output in the panel); `Esc` brings the panel home to telemetry.
+In-session: `/help`, `/goal`, `/skills`, `/mcp`, `/status`, `/memory`, `/files`, `/mode live|chat`, `/reasoning`, `/net on|off`, `/allow-dir <path>`, `/patience <s>`, `/panel`, `/theme`, `/settings`, `/clear`, `/exit` — verbose output lights up the right-side **spotlight panel** (telemetry / memory / file tree with click-to-preview / operator terminal / help), so the console stays a clean chat log. `! <cmd>` runs YOUR shell command in the chara's sandbox (same jail, output in the panel); `Esc` brings the panel home to telemetry.
 
 ## License & acknowledgements
 

@@ -19,6 +19,10 @@ class ToolPack:
     description: str = ""
     tools: list[str] = field(default_factory=list)
     note: str = ""  # optional extra system guidance appended when this pack is active
+    # MCP opt-in: configured server names this pack admits, or ["*"] for all.
+    # (Configuring a server in mcp.json is the operator's trust decision; the
+    # pack decides whether THIS capability bundle includes it.)
+    mcp_servers: list[str] = field(default_factory=list)
     source_path: str = ""
 
     @classmethod
@@ -30,6 +34,7 @@ class ToolPack:
             description=str(d.get("description", "")),
             tools=[str(t) for t in (d.get("tools", []) or [])],
             note=str(d.get("note", "")),
+            mcp_servers=[str(x) for x in (d.get("mcp_servers", []) or [])],
             source_path=str(p),
         )
 

@@ -28,7 +28,9 @@ from .persona import (
 from . import presence
 from . import providers
 from . import rules as rules_layer
+from .mcp import McpManager
 from .sandbox import Sandbox
+from .skills import SkillStore
 from .state import EnvState
 from .toolpacks import ToolPack, load_toolpack
 from .tools import ToolGateway
@@ -72,7 +74,15 @@ class LunaMothAgent:
         # steers every turn — and gives unattended time (empty user messages) a
         # direction without any engine-authored prompt.
         self.goals = GoalStore(SANDBOX_ROOT / "goals.json")
-        self.tools = ToolGateway(self.sandbox, self.state, self.audit, self.memory, self.goals)
+        # Skills: know-how the chara reads on demand AND writes for itself
+        # (workspace/skills/ shadows user + bundled — hermes's local-first rule).
+        self.skills = SkillStore()
+        # MCP: operator-configured external tool servers (mcp.json); packs opt in.
+        self.mcp = McpManager(config_dir=Path(os.getenv("LUNAMOTH_CONFIG_DIR", "")) if os.getenv("LUNAMOTH_CONFIG_DIR") else None)
+        self.tools = ToolGateway(
+            self.sandbox, self.state, self.audit, self.memory, self.goals,
+            skills=self.skills, mcp=self.mcp,
+        )
         self._load_toolpack()
         self.llm = LLMClient(self.settings.to_llm_config(), self._build_system_messages)
         self.thought_cfg = ThoughtConfig()
@@ -159,7 +169,10 @@ class LunaMothAgent:
             self.toolpack = load_toolpack(choice)
         except Exception as e:
             self.audit.write("toolpack_load_error", path=choice, error=str(e)[:300])
-        self.tools.set_enabled(self.toolpack.tools if self.toolpack else None)
+        self.tools.set_enabled(
+            self.toolpack.tools if self.toolpack else None,
+            mcp_servers=self.toolpack.mcp_servers if self.toolpack else None,
+        )
 
     def _card_limit(self, key: str) -> int | None:
         """A limit declared by the card, in extensions.lunamoth or top-level extensions."""
@@ -331,6 +344,11 @@ class LunaMothAgent:
             goals_block = self.goals.render_block()
             if goals_block:
                 msgs.append(goals_block)
+            # Skill index: names + one-liners only (progressive disclosure —
+            # the full text is a read_skill call away).
+            skills_block = self.skills.render_block()
+            if skills_block:
+                msgs.append(skills_block)
 
         # World info: card-embedded book + explicit standalone world book.
         world_blocks: list[str] = []

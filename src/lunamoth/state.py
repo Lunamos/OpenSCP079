@@ -14,7 +14,7 @@ DEFAULT_STATUS = {
     "tool_access": [
         "inspect_env", "read_memory", "write_memory", "list_files", "read_file",
         "list_workspace", "read_workspace_file", "write_file", "write_log", "terminal",
-        "request_permission", "add_goal", "set_goal_status",
+        "request_permission", "add_goal", "set_goal_status", "read_skill", "create_skill",
     ],
 }
 
@@ -54,7 +54,7 @@ class EnvState:
         # State files written before newer built-in tools: grant them.
         access = data.get("tool_access")
         if isinstance(access, list) and "terminal" in access:
-            for new_tool in ("request_permission", "add_goal", "set_goal_status"):
+            for new_tool in ("request_permission", "add_goal", "set_goal_status", "read_skill", "create_skill"):
                 if new_tool not in access:
                     access.append(new_tool)
                     changed = True

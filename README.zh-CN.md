@@ -48,6 +48,8 @@
 
 - [x] **Hermes 级上下文管理** —— 持久历史里存完整消息字典（assistant 工具调用、工具结果、reasoning 都跨重启留存，chara 记得自己跑过什么）；中断也会落盘半截回合、绝不丢你的指令；输出截断时显式注入"接着写/拆小点"提示而非静默截断；旧的空闲独白会从 API 视图中淡出，自语再多也压不住你的上一条指令
 
+- [x] **Skills，自己会写** —— SKILL.md 知识库（hermes/Anthropic 格式）+ 渐进披露：索引随提示词、`read_skill` 取全文，chara 用 `create_skill` 沉淀自己的技能（`workspace/skills/` 覆盖 `~/.lunamoth/skills/` 与内置同名技能）
+- [x] **MCP 客户端** —— 在 chara 配置旁放一个 Claude Code 格式的 `mcp.json`（stdio 服务器）；工具以 `mcp__server__tool` 进网关、同一套审计，工具包用 `mcp_servers` 选择接入。注意：MCP 服务器运行在沙盒牢笼之外——配置即信任决定
 - [x] **目标驱动的 chara** —— 按 chara 持久化的目标列表（操作员用 `/goal` 设 ⭑ 目标；chara 用 `add_goal`/`set_goal_status` 工具管自己的）注入每一轮提示词，让无人陪伴的时间有方向；完成与否由 chara 在诚实规则约束下自报——不做酒馆 Objective 式的双倍 API 检查
 - [x] **诚实的失败策略** —— 瞬时连接失败每 5 秒重试一次、最多 5 次（Claude Code 式，重试提示暗色显示），之后错误如实暴露；永久性错误（鉴权、请求非法）立即暴露。全局无降级模型、无任何编造的兜底输出——请求失败就是请求失败
 
@@ -55,7 +57,6 @@
 
 - [ ] **世界书功能对齐** —— 补齐与 SillyTavern 激活逻辑的差距：递归扫描、token 预算、sticky/cooldown/delay、插入位置/深度、触发概率、大小写与全词匹配。*涉及：`worldinfo.py`（调用方签名保持稳定）。*
 - [ ] **声明式工具注册表** —— 用 Hermes 式注册（名称、schema、handler、可用性检查）替换 `ToolGateway.tool_*` 硬编码方法 + 内联 schema，新工具只需一个自包含模块。*涉及：`tools.py`、新增 `tools/` 包。*
-- [ ] **MCP 客户端支持** —— 工具包可引用外部 MCP 服务器，其工具纳入网关，沿用同一套白名单/审计规则。*涉及：新增 `mcp.py`、`toolpacks.py`。*
 
 **远程接入**（有顺序——逐项递进）
 
@@ -171,7 +172,7 @@ lunamoth --patience 4     # 自发循环的间隔秒数（live 模式）
 lunamoth --plain          # 旧版纯终端模式
 ```
 
-会话内命令：`/help`、`/goal`、`/status`、`/memory`、`/files`、`/mode live|chat`、`/reasoning`、`/net on|off`、`/allow-dir <path>`、`/patience <s>`、`/panel`、`/theme`、`/settings`、`/clear`、`/exit` —— 冗长输出会点亮右侧**聚光板**（遥测 / 记忆 / 文件树点击预览 / 操作员终端 / 帮助），控制台始终是干净的聊天记录。`! <cmd>` 以你的身份在 chara 沙盒里跑 shell（同一牢笼，输出进面板）；`Esc` 让面板回到遥测。
+会话内命令：`/help`、`/goal`、`/skills`、`/mcp`、`/status`、`/memory`、`/files`、`/mode live|chat`、`/reasoning`、`/net on|off`、`/allow-dir <path>`、`/patience <s>`、`/panel`、`/theme`、`/settings`、`/clear`、`/exit` —— 冗长输出会点亮右侧**聚光板**（遥测 / 记忆 / 文件树点击预览 / 操作员终端 / 帮助），控制台始终是干净的聊天记录。`! <cmd>` 以你的身份在 chara 沙盒里跑 shell（同一牢笼，输出进面板）；`Esc` 让面板回到遥测。
 
 ## 许可与致谢
 

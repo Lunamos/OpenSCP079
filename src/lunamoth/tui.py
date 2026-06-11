@@ -26,7 +26,7 @@ from textual.widgets import (
 SLASH_COMMANDS = [
     "/help", "/status", "/memory", "/memory_path", "/files", "/workspace",
     "/read", "/wread", "/write", "/logs", "/reset",
-    "/goal", "/goal done", "/goal drop",
+    "/goal", "/goal done", "/goal drop", "/skills", "/mcp",
     "/mode live", "/mode chat", "/patience", "/reasoning", "/thinking on", "/thinking off",
     "/theme", "/net on", "/net off",
     "/allow-dir", "/panel", "/settings", "/clear", "/exit",
@@ -1183,6 +1183,32 @@ class LunaMothTUI(App):
         if low in {"/clear", "/cls"}:
             await self.action_clear_display()
             return
+        if low in {"/skills", "/skill"}:
+            skills = self.agent.skills.scan()
+            if not skills:
+                body = "(no skills yet)\n\nThe chara writes its own with create_skill;\nyou can drop SKILL.md dirs into ~/.lunamoth/skills/."
+            else:
+                tag = {"own": "✎", "user": "⌂", "bundled": "·"}
+                body = "\n".join(
+                    f"{tag.get(sk['origin'], '?')} {sk['name']} — {sk['description']}" for sk in skills
+                ) + "\n\n✎ the chara's own  ⌂ ~/.lunamoth/skills  · bundled"
+            self._console("/skills → panel", "grey50")
+            self._panel_out("SKILLS", body)
+            return
+        if low == "/mcp":
+            servers = self.agent.mcp.servers
+            if not servers:
+                body = "(no MCP servers configured)\n\nAdd mcp.json next to the chara's config\nor the project root — Claude Code format:\n{\"mcpServers\": {\"fetch\": {\"command\": \"uvx\",\n  \"args\": [\"mcp-server-fetch\"]}}}\n\nNote: MCP servers run OUTSIDE the sandbox\njail — configuring one is a trust decision."
+            else:
+                allowed = set(self.agent.tools.mcp_allowed)
+                lines = []
+                for name in sorted(servers):
+                    mark = "●" if name in allowed else "○ (not in this tool pack)"
+                    lines.append(f"{mark} {name} — {servers[name].get('command', '?')}")
+                body = "\n".join(lines) + "\n\nTools appear to the chara as mcp__<server>__<tool>."
+            self._console("/mcp → panel", "grey50")
+            self._panel_out("MCP SERVERS", body)
+            return
         if low.startswith("/goal"):
             rest = text[len("/goal"):].strip()
             parts = rest.split(maxsplit=1)
@@ -1350,6 +1376,8 @@ class LunaMothTUI(App):
             "",
             "/goal [text|done g3|drop g3]  the chara's",
             "          goal list — goals steer every turn",
+            "/skills   skill index (the chara writes its own)",
+            "/mcp      configured MCP tool servers",
             "/memory   memory document (this panel)",
             "/files    sandbox file tree (click = preview)",
             "/status   environment + context size",
