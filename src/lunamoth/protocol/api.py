@@ -75,6 +75,8 @@ class StateSnapshot:
     isolation: str
     net_on: bool
     user_present: bool
+    rest_until: float        # epoch the chara chose to rest until (0 = not resting)
+    quiet: int               # engagement: silence (s) before it resumes its own work
     context_tokens: int
     context_max: int
     memory_chars: int
@@ -211,6 +213,8 @@ class CharaHandle:
             isolation=str(status.get("isolation", a.settings.py_backend)),
             net_on=bool(status.get("network_access")),
             user_present=bool(status.get("user_present")),
+            rest_until=float(status.get("rest_until", 0.0) or 0.0),
+            quiet=int(getattr(a.settings, "quiet", 300)),
             context_tokens=self._session.context.token_count() if self._session else 0,
             context_max=self._session.context.max_tokens if self._session else a.context_limit(),
             memory_chars=mem.chars("memory") + mem.chars("user"),

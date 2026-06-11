@@ -215,6 +215,9 @@ class LunaMothTUI(App):
         # Attach grace: after the arrival greeting the chara leaves you room for
         # the first word; if you stay silent past this it returns to its work.
         self.grace_until = 0.0
+        # Engagement: while you are actively talking, the chara's own life waits;
+        # it resumes settings.quiet seconds after your last word.
+        self.last_user_at = 0.0
         self._activity = "waiting"
         # ✶ indicator state: when the stream started, tokens received, thinking volume.
         self._stream_t0 = 0.0
@@ -602,6 +605,8 @@ class LunaMothTUI(App):
             if self._think_tokens and snap.reasoning != "off":
                 parts.append(f"thinking {snap.reasoning}")
             activity = f"✶ {self._activity}…" + (f" ({' · '.join(parts)})" if parts else "")
+        elif snap.rest_until > time.time():
+            activity = f"resting until {time.strftime('%H:%M', time.localtime(snap.rest_until))}"
         else:
             activity = "waiting"
         self.status.update(
@@ -776,10 +781,18 @@ class LunaMothTUI(App):
             self._start_stream(StreamJob(kind="user", text=text), prefix=self.skin.reply_pfx(self.char_name))
             return
         now = time.monotonic()
-        if self.mode == "live" and now >= self.next_spont_at and now >= self.grace_until:
-            # live mode = the chara keeps living: spontaneous cycles between your
-            # messages, paced by `patience` (plus the post-greeting attach grace).
-            self._start_stream(StreamJob(kind="think"), prefix=self.skin.thought_pfx(self.char_name))
+        if self.mode != "live" or now < self.next_spont_at or now < self.grace_until:
+            return
+        # Engagement: your conversation outranks its own work — it stays with you
+        # until you've been quiet for `quiet` seconds (default 5 min).
+        if self.last_user_at and now < self.last_user_at + max(0, int(self.settings.quiet)):
+            return
+        # Self-paced rest (the rest tool): it chose when to wake; honor that.
+        if self.handle.snapshot().rest_until > time.time():
+            return
+        # live mode = the chara keeps living: spontaneous cycles between your
+        # messages, paced by `patience` (plus the post-greeting attach grace).
+        self._start_stream(StreamJob(kind="think"), prefix=self.skin.thought_pfx(self.char_name))
 
     def _scheduler_tick(self) -> None:
         if self.shutdown_requested:
@@ -896,8 +909,10 @@ class LunaMothTUI(App):
         if self.display_segments and self._display_tail() != "\n\n":
             self._append_display("\n")
         self._append_display(f"{self.skin.operator_pfx(self.settings.user_name)}{text}\n")
-        # The operator has spoken — the attach grace has served its purpose.
+        # The operator has spoken — the attach grace has served its purpose, and
+        # the engagement clock starts: its own work waits while you're talking.
         self.grace_until = 0.0
+        self.last_user_at = time.monotonic()
         self.pending_input = text
         # Interrupt any in-flight cycle so the queued message goes out promptly; the pump
         # then starts it the moment the worker actually stops.

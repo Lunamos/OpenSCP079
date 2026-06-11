@@ -195,6 +195,22 @@ def _mode(agent, session, arg: str) -> Reply:
                  {"mode": agent.settings.mode})
 
 
+def _quiet(agent, session, arg: str) -> Reply:
+    want = arg.strip()
+    if want:
+        try:
+            seconds = max(0, int(float(want) * 60) if "." in want else int(want))
+        except ValueError:
+            return Reply(False, "usage: /quiet <seconds> — how long after your last word it resumes its own work")
+        _persist(agent, quiet=seconds)
+        return Reply(True, f"quiet period = {seconds}s (persisted — it resumes its own life after this much silence)",
+                     {"quiet": seconds})
+    return Reply(True,
+                 f"quiet period = {agent.settings.quiet}s  (usage: /quiet <seconds> — while you talk it sets "
+                 "its work aside; after this much silence it picks its life back up)",
+                 {"quiet": agent.settings.quiet})
+
+
 def _thinking(agent, session, arg: str) -> Reply:
     want = arg.strip().lower()
     if want in {"on", "off"}:
@@ -250,6 +266,7 @@ _REGISTRY: dict[str, Command] = dict([
     _cmd("net", "/net on|off", "terminal network access", _net),
     _cmd("allow-dir", "/allow-dir <path>", "extra writable path (sandbox)", _allow_dir),
     _cmd("mode", "/mode live|chat", "live: keeps creating while you watch; chat: replies only", _mode),
+    _cmd("quiet", "/quiet <seconds>", "silence before it resumes its own work (default 300)", _quiet),
     _cmd("thinking", "/thinking on|off", "show the thinking text (default: ✶ indicator only)", _thinking),
     _cmd("reasoning", "/reasoning off|low|medium|high", "reasoning effort (default medium)", _reasoning),
     _cmd("compact", "/compact", "fold older turns into a summary now", _compact),

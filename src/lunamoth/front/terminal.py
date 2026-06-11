@@ -149,6 +149,9 @@ def main(argv: list[str] | None = None) -> int:
         elif info.opening == "probe":
             _stream_with_interrupt(reply_pfx, handle.stream_user(info.opening_text), allow_interrupt=False)
     pending_line: str | None = None
+    # Engagement: while the operator is actively talking, the chara's own life
+    # waits; it resumes settings.quiet seconds after their last word.
+    last_user_at = 0.0
     if interactive:
         _prompt()
         # Attach grace (live mode): leave the operator room for the first word; if
@@ -203,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(handle.command(stripped).text, flush=True)
                     _prompt()
                     continue
+                last_user_at = time.monotonic()
                 _, interrupt = _stream_with_interrupt(reply_pfx, handle.stream_user(line), allow_interrupt=True)
                 if interrupt is not None:
                     pending_line = interrupt
@@ -211,7 +215,11 @@ def main(argv: list[str] | None = None) -> int:
                 _prompt()
                 continue
 
-            if state.eternal:
+            # Its own life waits while the operator is engaged or it chose to rest.
+            quiet = max(0, int(getattr(handle.settings, "quiet", 300)))  # live: /quiet re-reads
+            engaged = last_user_at and time.monotonic() < last_user_at + quiet
+            resting = handle.snapshot().rest_until > time.time()
+            if state.eternal and not engaged and not resting:
                 print("\n\x1b[2m· idle ·\x1b[0m", flush=True)
                 _, interrupt = _stream_with_interrupt(think_pfx, handle.stream_idle(), allow_interrupt=True)
                 if interrupt is not None:

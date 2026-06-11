@@ -273,6 +273,9 @@ class LunaMothAgent:
         # then persist every new message back — conversations survive restarts.
         session.context.restore(self.transcript.load(max_messages=self.RESTORE_MAX_MESSAGES))
         session.context.persist = self.transcript.append_message
+        # Time sense survives restarts: the next exchange knows how long the
+        # silence REALLY was, from the transcript's last timestamp.
+        self._last_turn_wall = self.transcript.last_timestamp()
         _log.info("session: restored %d message(s), window=%d tokens, model=%s",
                   len(session.context.messages), ctx, self.settings.model)
         return session
@@ -372,11 +375,14 @@ class LunaMothAgent:
             # just a short, neutral nudge + the live env facts.
             net = "on" if status.get("network_access") else "off"
             who = "present" if status.get("user_present") else "away"
+            # Day-level date only: precise time rides the unattended ticks and
+            # gap notes; a per-minute clock here would churn the prompt cache.
+            today = datetime.now().strftime("%Y-%m-%d %a")
             msgs.append(
                 "You have tools available via native function calling. Call them directly when "
                 "you want to act; never paste code in prose or claim a result before the tool returns.\n"
                 f"Environment: isolation={status.get('isolation', 'sandbox')}, network={net}, "
-                f"operator={who}, workspace is your read/write directory."
+                f"operator={who}, date={today}, workspace is your read/write directory."
             )
             if self.toolpack and self.toolpack.note.strip():
                 msgs.append(self.toolpack.note.strip())
@@ -480,7 +486,13 @@ class LunaMothAgent:
             err = str(result.get("error", ""))
             display = f"⚙ {name} ✗ {_abbrev(err, 160)}"
             content = f"ERROR: {err}"
-        return {"display": display, "content": content, "ok": bool(result.get("ok"))}
+        out = {"display": display, "content": content, "ok": bool(result.get("ok"))}
+        if name == "speak" and result.get("ok"):
+            # The spoken text becomes a say-channel event (stream_agent yields it);
+            # no dim machinery line — the words ARE the visible result.
+            out["say"] = str(args.get("text", ""))
+            out["display"] = ""
+        return out
 
     def stream_handle(self, text: str, session: Session):
         text = text.strip()
@@ -493,8 +505,12 @@ class LunaMothAgent:
 
             yield TextDelta(commands.execute(self, session, text).text)
             return
+        self.state.clear_rest()  # a word from the user always wakes the chara
         status = self.state.load()
         memory_text = self._memory_text()
+        # After a long real-world silence, note the gap once — the chara should
+        # feel time passing without timestamps littering every message.
+        self._note_time_gap(session)
         # Commit the operator's message BEFORE streaming: an interrupted reply
         # must never lose the instruction that caused it.
         session.context.add("user", text)
@@ -522,6 +538,30 @@ class LunaMothAgent:
                 partial = "".join(speech).strip()
                 if partial:
                     session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
+
+    # Real-world silences longer than this get one factual note in the context.
+    TIME_GAP_NOTE_SECONDS = 1800.0
+
+    def _now_text(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def _note_time_gap(self, session: Session) -> None:
+        """One neutral line when a long silence ends — sparse by construction."""
+        import time as _time
+
+        last = getattr(self, "_last_turn_wall", 0.0)
+        now = _time.time()
+        self._last_turn_wall = now
+        if not last or now - last < self.TIME_GAP_NOTE_SECONDS:
+            return
+        hours = (now - last) / 3600
+        gap = f"{hours:.1f} hours" if hours < 48 else f"{hours / 24:.1f} days"
+        zh = str(self.lang).startswith("zh")
+        note = (
+            f"[现在是 {self._now_text()}，距上一次交流已过去 {gap}]" if zh
+            else f"[it is now {self._now_text()} — {gap} since the last exchange]"
+        )
+        session.context.add("system", note)
 
     def _record_think(self, session: Session):
         """record() wrapper for idle cycles: monologue text is tagged kind='think'
@@ -569,8 +609,16 @@ class LunaMothAgent:
                 # NO failure fallback: if the request fails (after the client's
                 # own retries) the error propagates to the UI as an error — a
                 # failed request is a failed request, never fabricated output.
+                # The tick is a user message carrying ONLY the current wall-clock
+                # time — the documented convention (rules layer) for "no one is
+                # speaking; real time is passing". It is ephemeral
+                # (in_context=False), so the chara always knows what time it is
+                # with ZERO timestamp residue in the durable context.
+                import time as _time
+
+                self._last_turn_wall = _time.time()
                 stream = self._reply_stream(
-                    "", self._memory_text(), status, self._context_view(session),
+                    f"[{self._now_text()}]", self._memory_text(), status, self._context_view(session),
                     in_context=False, record=self._record_think(session), channel=MUSE,
                 )
                 try:

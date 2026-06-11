@@ -74,6 +74,9 @@ class Settings:
     #   chat = greets you, then attends to you only — no self-talk while attached
     # (Detached life is not a mode: `lunamoth start/stop` is that switch.)
     mode: str = "live"
+    # Engagement quiet period, seconds: while you are actively talking the chara
+    # sets its own work aside; after this much silence it picks its life back up.
+    quiet: int = 300
 
     def is_live(self) -> bool:
         return self.provider.strip().lower() in LIVE_PROVIDERS and bool(self.base_url.strip())
@@ -140,7 +143,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "reasoning": ("LLM_REASONING",),
 }
 
-_INT_FIELDS = {"max_tokens", "memory_chars", "user_chars"}
+_INT_FIELDS = {"max_tokens", "memory_chars", "user_chars", "quiet"}
 
 _FIELD_TYPES = {f.name: f.type for f in fields(Settings)}
 

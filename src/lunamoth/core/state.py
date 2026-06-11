@@ -11,10 +11,12 @@ DEFAULT_STATUS = {
     "network_access": False,         # toggled live by the operator (/net on)
     "writable_paths": [],            # extra dirs the terminal tool may write to
     "user_present": False,           # is an operator attached right now? (set by TUI/daemon)
+    "rest_until": 0.0,               # epoch until which the chara chose to rest (rest tool)
     "tool_access": [
         "inspect_env", "memory", "list_files", "read_file",
         "list_workspace", "read_workspace_file", "write_file", "write_log", "terminal",
         "request_permission", "add_goal", "set_goal_status", "read_skill", "create_skill",
+        "speak", "rest",
     ],
 }
 
@@ -54,12 +56,14 @@ class EnvState:
         # State files written before newer built-in tools: grant them.
         access = data.get("tool_access")
         if isinstance(access, list) and "terminal" in access:
-            for new_tool in ("request_permission", "add_goal", "set_goal_status", "read_skill", "create_skill"):
+            for new_tool in ("request_permission", "add_goal", "set_goal_status", "read_skill", "create_skill",
+                             "speak", "rest"):
                 if new_tool not in access:
                     access.append(new_tool)
                     changed = True
         data.setdefault("isolation", "sandbox")
         data.setdefault("user_present", False)
+        data.setdefault("rest_until", 0.0)
         if changed:
             self.save(data)
         return data
@@ -78,6 +82,20 @@ class EnvState:
         data["network_access"] = bool(allowed)
         self.save(data)
         return data
+
+    def set_rest_until(self, when: float) -> dict[str, Any]:
+        data = self.load()
+        data["rest_until"] = float(when)
+        self.save(data)
+        return data
+
+    def clear_rest(self) -> None:
+        """A word from the user always wakes the chara early. Cheap no-op when
+        not resting (no disk write)."""
+        data = self.load()
+        if data.get("rest_until"):
+            data["rest_until"] = 0.0
+            self.save(data)
 
     def add_writable_path(self, path: str) -> dict[str, Any]:
         data = self.load()

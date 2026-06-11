@@ -198,6 +198,27 @@ class ToolGateway:
         path = self.skills.create(name, description, content)
         return f"skill {name!r} saved to {path} — it is now in your skill index"
 
+    def tool_speak(self, text: str) -> str:
+        """Deliver a message to the user. The delivery itself happens in the
+        agent loop (a say-channel event every frontend routes to the user);
+        this method only validates and confirms."""
+        if not str(text).strip():
+            raise ValueError("nothing to say — `text` is empty")
+        return "delivered."
+
+    _MIN_REST_MINUTES = 1
+    _MAX_REST_MINUTES = 120
+
+    def tool_rest(self, minutes: float, reason: str = "") -> str:
+        """The chara chooses when its next unattended cycle wakes."""
+        try:
+            m = float(minutes)
+        except (TypeError, ValueError):
+            raise ValueError("minutes must be a number") from None
+        m = max(self._MIN_REST_MINUTES, min(self._MAX_REST_MINUTES, m))
+        self.state.set_rest_until(time.time() + m * 60)
+        return f"resting — next unattended cycle in ~{m:g} min (a word from your user wakes you early)."
+
     def tool_request_permission(self, kind: str, reason: str, detail: str = "", wait_seconds: int = 60) -> str:
         """Ask the operator for a capability or more resources.
 
@@ -403,6 +424,36 @@ class ToolGateway:
                         },
                     },
                     "required": ["kind", "reason"],
+                },
+            },
+            "speak": {
+                "description": (
+                    "Say something to your user, directly. While they are away or not watching, "
+                    "your ordinary output stays with you — only what you pass through this tool is "
+                    "DELIVERED to them (console highlight, message, notification — whatever frontend "
+                    "they use). What is worth their attention is yours to judge."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "What to tell them."},
+                    },
+                    "required": ["text"],
+                },
+            },
+            "rest": {
+                "description": (
+                    "Choose when your next unattended cycle wakes: rest for `minutes` (1-120). "
+                    "Use it to pace yourself — after a stretch of work, or when nothing is worth "
+                    "doing right now. A message from your user always wakes you early."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "minutes": {"type": "number", "description": "How long to rest (1-120 minutes)."},
+                        "reason": {"type": "string", "description": "Optional: why (for your own records)."},
+                    },
+                    "required": ["minutes"],
                 },
             },
         }

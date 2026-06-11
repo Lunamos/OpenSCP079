@@ -404,6 +404,11 @@ class LLMClient:
                             duration=time.monotonic() - tool_t0,
                             summary=str(res.get("display") or ""), index=i,
                         )
+                        if res.get("say"):
+                            # A tool surfaced words ADDRESSED TO THE USER (the
+                            # speak tool): always the say channel — every
+                            # frontend delivers it, whatever this turn's channel.
+                            yield TextDelta(str(res["say"]) + "\n", "say")
                         t_msg = {"role": "tool", "tool_call_id": tc.get("id") or "", "content": res.get("content", "")}
                         record(t_msg)
                         messages.append(t_msg)

@@ -183,6 +183,20 @@ class TranscriptStore:
                 out.append({"role": str(role), "content": str(content)})
         return out
 
+    def last_timestamp(self) -> float:
+        """Wall-clock time of the newest message in the current epoch (0 if none).
+        Lets a restarted chara know how long the silence really was."""
+        if not self.available:
+            return 0.0
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT MAX(ts) FROM messages WHERE epoch=?", (self.epoch(),)
+                ).fetchone()
+            return float(row[0]) if row and row[0] else 0.0
+        except (sqlite3.Error, OSError):
+            return 0.0
+
     def count(self) -> int:
         if not self.available:
             return 0
