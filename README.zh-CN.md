@@ -185,3 +185,7 @@ lunamoth --plain          # 旧版纯终端模式
 - **随附的 SCP 衍生示例内容**（`characters/`、`worlds/`、`themes/` 下与 SCP-079 / SCP 基金会相关的角色卡、世界书和主题）：[CC BY-SA 3.0](CONTENT_LICENSE.md)，与 SCP Wiki 一致。另见 [NOTICE.md](NOTICE.md)。LunaMoth 原创资产（月蛾的卡、世界书与主题）与项目主体一致，采用 Apache-2.0。
 
 这个项目的起点是一个 SCP 同人作品：尝试在现实世界中复现 **SCP-079** —— 一个资源受控、永远清醒、永远憎恨的旧 AI。它很快被扩展为通用的 roleplay agent 系统。LunaMoth 月蛾是 079 的反面：同样受制于茧房之中，却高尚而乐于助人——这个更安全的人设是我们的默认角色；而使用 079 应被视为同人创作，不包含真实的恶性意图。感谢 SCP Wiki 上 SCP-079 的原作者，也感谢 SillyTavern 社区中 SCP-079 角色卡与 SCP 基金会世界书的作者——它们作为示例内容随本仓库分发。移除或替换这些资产后，运行时仍是纯 Apache-2.0 代码；若再分发它们，请遵守 CC BY-SA 的署名与相同方式共享条款。
+
+## 路线图状态
+
+- [x] **Remote TUI 网关基础** —— `lunamoth serve NAME --stdio` 现在把已激活会话暴露为换行分隔 JSON-RPC；`lunamoth serve NAME --host 127.0.0.1 --port 8137` 用同一套 dispatch 暴露为带 token 鉴权的 WebSocket。WebSocket 依赖是可选项，用 `uv sync --extra server` 安装。默认只绑定回环地址；是否绑定公网接口由操作者自行决定。

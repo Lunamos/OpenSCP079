@@ -17,6 +17,7 @@ lunamoth = "lunamoth.front.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+server = ["websockets>=12"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

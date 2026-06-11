@@ -27,6 +27,7 @@ import datetime as _dt
 import json
 import os
 import runpy
+import secrets
 import shutil
 import subprocess
 import sys
@@ -303,6 +304,57 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    meta = S.load_session(args.name)
+    if meta is None:
+        print(f"error: no chara named {args.name!r} (see `lunamoth ls`)", file=sys.stderr)
+        return 1
+    if not meta.is_configured():
+        print(f"error: chara {args.name!r} isn't set up yet — `lunamoth setup {args.name}` first", file=sys.stderr)
+        return 1
+    if meta.running_pid():
+        print(f"error: chara {args.name!r} already has an attached frontend (pid {meta.running_pid()})", file=sys.stderr)
+        return 1
+    if meta.daemon_pid():
+        print(f"error: chara {args.name!r} is running in the background; stop it first", file=sys.stderr)
+        return 1
+    _activate(meta)
+    if getattr(args, "debug", False):
+        os.environ["LUNAMOTH_DEBUG"] = "1"
+    meta.mark_running()
+    try:
+        if args.stdio:
+            from ..server.stdio import serve
+
+            return serve()
+        token = args.token or secrets.token_urlsafe(32)
+        if not args.token:
+            print(f"server token: {token}", file=sys.stderr, flush=True)
+        print(
+            f"serving {args.name!r} on ws://{args.host}:{args.port} "
+            "(bind/expose publicly only if you intend to)",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            from ..server.ws import serve_forever
+        except ImportError as e:
+            print(f"error: WebSocket transport requires websockets. Install with: uv sync --extra server ({e})", file=sys.stderr)
+            return 1
+        try:
+            import asyncio
+
+            asyncio.run(serve_forever(args.host, args.port, token))
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    finally:
+        meta.clear_running()
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     meta = S.load_session(args.name) or (S.ensure_default_session() if args.name == S.DEFAULT_SESSION else None)
     if meta is None:
@@ -490,6 +542,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-p", "--prompt", required=True, help="the message to send")
     sp.add_argument("--stream-json", action="store_true", help="one protocol event per line (JSONL wire format)")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("serve", help="serve one session over JSON-RPC (stdio or WebSocket)")
+    sp.add_argument("name")
+    sp.add_argument("--stdio", action="store_true", help="speak newline-delimited JSON-RPC on stdin/stdout")
+    sp.add_argument("--host", default="127.0.0.1", help="WebSocket bind host (default: 127.0.0.1)")
+    sp.add_argument("--port", type=int, default=8137, help="WebSocket bind port (default: 8137)")
+    sp.add_argument("--token", default="", help="WebSocket bearer token (auto-generated if omitted)")
+    sp.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics in the chara's sandbox/logs/")
+    sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("setup", help="(re)run the setup wizard")
     sp.add_argument("name", nargs="?", default=S.DEFAULT_SESSION)
