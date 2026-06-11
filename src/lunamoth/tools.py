@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from .audit import AuditLog
+from .obs import get_logger
 from .goals import GoalStore
 from .mcp import McpError, McpManager
 from .memory import MemoryLimits, MemoryStore
@@ -12,6 +14,8 @@ from .skills import SkillStore
 from .runner import run_terminal
 from .sandbox import Sandbox, SandboxViolation
 from .state import EnvState
+
+_log = get_logger("tools")
 
 # Caps for operator-grantable resources/waits.
 _MAX_PERMISSION_WAIT = 300
@@ -81,6 +85,7 @@ class ToolGateway:
             result = {"ok": False, "error": f"{name} is missing required argument(s): {', '.join(missing)}. Required parameters: {props}."}
             self.audit.write("tool_badargs", tool=name, args=self._safe_args(kwargs), result=result)
             return result
+        t0 = time.monotonic()
         try:
             result = {"ok": True, "data": method(**kwargs)}
         except TypeError as e:
@@ -89,6 +94,10 @@ class ToolGateway:
         except (SandboxViolation, FileNotFoundError, ValueError, PermissionError) as e:
             result = {"ok": False, "error": str(e)}
         self.audit.write("tool_call", tool=name, args=self._safe_args(kwargs), result=result)
+        if result["ok"]:
+            _log.debug("%s ok in %.2fs", name, time.monotonic() - t0)
+        else:
+            _log.warning("%s failed: %s", name, result["error"])
         return result
 
     def _call_mcp(self, name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +111,7 @@ class ToolGateway:
             result = {"ok": True, "data": self.mcp.call(name, kwargs)}
         except McpError as e:
             result = {"ok": False, "error": str(e)}
+            _log.warning("%s failed: %s", name, e)
         self.audit.write("tool_call", tool=name, args=self._safe_args(kwargs), result=result)
         return result
 

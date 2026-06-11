@@ -35,6 +35,7 @@ SLASH_COMMANDS = [
 from . import art
 from .agent import LunaMothAgent
 from .cleanup import clean_runtime_sandbox
+from .obs import broker, get_logger
 from .context import estimate_tokens
 from .config import ROOT
 from .llm import DIM_OFF, DIM_ON, THINK_OFF, THINK_ON, LLMClient
@@ -47,6 +48,8 @@ from .themes import TuiTheme, load_theme
 # \x01/\x02 = dim (tool activity, always shown dimmed),
 # \x03/\x04 = think (hidden by default behind the ✶ indicator).
 _DIM_SPLIT = re.compile("(\x01|\x02|\x03|\x04)")
+
+_log = get_logger("tui")
 
 
 def _st_dir() -> Path | None:
@@ -514,6 +517,7 @@ class LunaMothTUI(App):
         "term": "OPERATOR TERMINAL",
         "help": "HELP",
         "out": "OUTPUT",
+        "log": "DIAGNOSTIC LOG",
     }
 
     # Spontaneous-cycle activity words, shown in the status line while a self-talk
@@ -592,6 +596,8 @@ class LunaMothTUI(App):
                         yield Static("", id="helptext")
                     with VerticalScroll(id="view-out"):
                         yield Static("", id="outtext")
+                    with VerticalScroll(id="view-log"):
+                        yield Static("", id="logtext")
                     yield RichLog(id="view-term", wrap=True, auto_scroll=True, markup=False)
                     with Vertical(id="view-files"):
                         yield DirectoryTree(str(self.agent.sandbox.root), id="filetree")
@@ -627,6 +633,7 @@ class LunaMothTUI(App):
         self.memfull = self.query_one("#memfull", Static)
         self.helptext = self.query_one("#helptext", Static)
         self.outtext = self.query_one("#outtext", Static)
+        self.logtext = self.query_one("#logtext", Static)
         self.termlog = self.query_one("#view-term", RichLog)
         self.filetree = self.query_one("#filetree", DirectoryTree)
         self.filepreview = self.query_one("#filepreview", Static)
@@ -785,6 +792,8 @@ class LunaMothTUI(App):
         sb.border_title = self.PANEL_TITLES.get(view, "") or self.skin.sidebar_title
         if view == "memory":
             self._render_memory_view()
+        elif view == "log":
+            self._render_log_view()
         elif view == "files":
             try:
                 self.filetree.reload()
@@ -807,6 +816,17 @@ class LunaMothTUI(App):
         t.append(f"\nmemory {store.usage('memory')} · user {store.usage('user')} · {store.root}\n\n", style="grey50")
         t.append(rendered if rendered.strip() else "(empty — the chara curates this via the `memory` tool)", style="grey85")
         self.memfull.update(t)
+
+    def _render_log_view(self) -> None:
+        """Recent diagnostics from the in-memory ring (files: sandbox/logs/)."""
+        from .obs.log import log_dir
+
+        lines = broker.tail(120)
+        t = Text()
+        t.append("DIAGNOSTIC LOG\n", style=f"bold {self.skin.accent}")
+        t.append(f"{log_dir()} · last {len(lines)} line(s)\n\n", style="grey50")
+        t.append("\n".join(lines) if lines else "(quiet so far)", style="grey70")
+        self.logtext.update(t)
 
     def _panel_out(self, title: str, body: str) -> None:
         """Route one-shot command output to the panel's OUTPUT view."""
@@ -1077,6 +1097,7 @@ class LunaMothTUI(App):
                     break
                 self.output.put(("chunk", chunk))
         except Exception as e:
+            _log.exception("stream worker failed (job=%s)", job.kind)
             self.output.put(("error", f"stream error: {e}"))
         finally:
             self.output.put(("done", "\n"))
@@ -1521,7 +1542,10 @@ def main(argv: list[str] | None = None) -> int:
     # the session sandbox on exit; --no-clean-on-exit kept as a harmless alias.
     parser.add_argument("--clean-on-exit", action="store_true")
     parser.add_argument("--no-clean-on-exit", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics in sandbox/logs/")
     args = parser.parse_args(argv)
+    if args.debug:
+        os.environ["LUNAMOTH_DEBUG"] = "1"  # picked up by setup_logging in the agent
     mode_override = args.mode or ("live" if (args.forever or args.think) else ("chat" if args.no_think else ""))
     app = LunaMothTUI(
         patience=args.patience,

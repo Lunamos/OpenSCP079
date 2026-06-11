@@ -118,7 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--no-stream', action='store_true', help='use non-streaming fallback output')
     parser.add_argument('--clean-on-exit', action='store_true', help='wipe the session sandbox on shutdown (default: persist)')
     parser.add_argument('--no-clean-on-exit', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--debug', action='store_true', help='DEBUG-level diagnostics in sandbox/logs/')
     args = parser.parse_args(argv)
+    if args.debug:
+        import os
+
+        os.environ['LUNAMOTH_DEBUG'] = '1'  # picked up by setup_logging in the agent
 
     patience = float(args.patience)
     agent = LunaMothAgent()

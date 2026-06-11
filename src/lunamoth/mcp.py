@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import ROOT
+from .obs import get_logger
+
+_log = get_logger("mcp")
 
 _PROTOCOL_VERSION = "2025-03-26"
 _SAFE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "USER", "SHELL")
@@ -86,6 +89,7 @@ class _Client:
         if not command:
             raise McpError(f"mcp server {self.name!r}: no command configured")
         argv = [str(command)] + [str(a) for a in self.config.get("args", [])]
+        restarted = self.proc is not None
         try:
             self.proc = subprocess.Popen(
                 argv,
@@ -93,7 +97,9 @@ class _Client:
                 env=_safe_env(self.config.get("env")), text=True, bufsize=1,
             )
         except OSError as e:
+            _log.error("server %r failed to start (%s): %s", self.name, argv[0], e)
             raise McpError(f"mcp server {self.name!r} failed to start: {e}") from e
+        _log.info("server %r %s (pid %d)", self.name, "restarted" if restarted else "started", self.proc.pid)
         self._tools = None
         self._rpc("initialize", {
             "protocolVersion": _PROTOCOL_VERSION,
@@ -130,8 +136,10 @@ class _Client:
                 continue  # notification or unrelated message
             if "error" in msg:
                 err = msg["error"]
+                _log.warning("server %r returned an error for %s: %s", self.name, method, err)
                 raise McpError(f"mcp {self.name}: {err.get('message', err)}")
             return msg.get("result", {})
+        _log.error("server %r closed the stream during %s (crashed?)", self.name, method)
         raise McpError(f"mcp server {self.name!r} closed the stream (crashed?)")
 
     def close(self) -> None:

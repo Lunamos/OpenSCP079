@@ -23,7 +23,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+from .obs import get_logger
+
+_log = get_logger("runner")
 
 DEFAULT_TIMEOUT = 30
 _OUTPUT_CAP = 12000
@@ -141,6 +146,7 @@ def run_terminal(
         cmd = ["/bin/bash", "-c", command]
         run_cwd = str(cwd)
 
+    t0 = time.monotonic()
     try:
         proc = subprocess.run(
             cmd,
@@ -152,9 +158,13 @@ def run_terminal(
             start_new_session=True,  # own process group so timeout kills children
         )
     except subprocess.TimeoutExpired:
+        _log.warning("terminal command timed out after %ds (%s): %.120s", timeout, isolation, command)
         return f"[timed out after {timeout}s]{note}"
     except FileNotFoundError as e:
+        _log.error("terminal runner unavailable (%s): %s", isolation, e)
         return f"[runner error: {e}]{note}"
+    _log.info("terminal (%s, net=%s) exit=%d in %.1fs: %.120s",
+              isolation, "on" if allow_network else "off", proc.returncode, time.monotonic() - t0, command)
 
     out = (proc.stdout or "")[-_OUTPUT_CAP:]
     err = (proc.stderr or "")[-2000:]

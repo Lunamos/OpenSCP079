@@ -76,8 +76,13 @@ class TranscriptStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
                 conn.executescript(_SCHEMA)
-        except (sqlite3.Error, OSError):
+        except (sqlite3.Error, OSError) as e:
             self.available = False
+            from .obs import get_logger
+
+            get_logger("transcript").error(
+                "transcript db unavailable at %s (%s) — conversation will NOT survive restarts", path, e
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5.0)

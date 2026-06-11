@@ -13,6 +13,7 @@ import json as _json
 
 from .audit import AuditLog
 from .cards import CharacterCard
+from .obs import get_logger, setup_logging
 from .config import ROOT, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
 from .goals import GoalStore
@@ -37,6 +38,8 @@ from .tools import ToolGateway
 from .transcript import TranscriptStore
 from .worldinfo import Lorebook, apply_macros
 
+_log = get_logger("agent")
+
 
 def _abbrev(text: str, limit: int) -> str:
     """Collapse a tool result to a single short line for compact display."""
@@ -58,6 +61,7 @@ class LunaMothAgent:
     def __init__(self, settings: "Settings | None" = None):
         from .settings import load_settings
 
+        setup_logging()  # idempotent — whoever builds an agent gets diagnostics
         self.settings = settings or load_settings()
         self.lang = system_language()  # derived from the active card in _load_cards()
         self.sandbox = Sandbox(SANDBOX_ROOT)
@@ -268,6 +272,8 @@ class LunaMothAgent:
         # then persist every new message back — conversations survive restarts.
         session.context.restore(self.transcript.load(max_messages=self.RESTORE_MAX_MESSAGES))
         session.context.persist = self.transcript.append_message
+        _log.info("session: restored %d message(s), window=%d tokens, model=%s",
+                  len(session.context.messages), ctx, self.settings.model)
         return session
 
     def char_name(self) -> str:
@@ -423,9 +429,11 @@ class LunaMothAgent:
                 changed = compaction.compact(session.context, self.lang, self.llm, force=force)
                 if changed:
                     self.audit.write("compacted", tokens=session.context.token_count())
+                    _log.info("context compacted to ~%d tokens", session.context.token_count())
                 return changed
         except Exception as e:  # compaction must never break a turn
             self.audit.write("compact_error", error=str(e)[:200])
+            _log.warning("compaction failed (turn continues uncompacted): %s", e)
         return False
 
     def _reply_stream(

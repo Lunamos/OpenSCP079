@@ -7,8 +7,10 @@ import time
 from typing import Any, Callable, Iterator
 
 from .config import LLMConfig
+from .obs import get_logger
 from .persona import fallback_persona
 
+_log = get_logger("llm")
 
 LIVE_PROVIDERS = {"openai_compatible", "openai", "ollama", "openrouter"}
 
@@ -147,6 +149,7 @@ class LLMClient:
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", errors="replace")[:500]
                 if e.code not in self._RETRYABLE_HTTP:
+                    _log.error("permanent HTTP error from %s: %s %s", url, e.code, detail[:200])
                     raise RuntimeError(f"HTTP {e.code}: {detail}") from e
                 err = f"HTTP {e.code}: {detail[:120]}"
             except urllib.error.URLError as e:
@@ -155,7 +158,9 @@ class LLMClient:
                 err = "connection timed out"
             attempt += 1
             if attempt > self._RETRY_LIMIT:
+                _log.error("gave up after %d retries: %s", self._RETRY_LIMIT, err)
                 raise RuntimeError(f"{err} — gave up after {self._RETRY_LIMIT} retries")
+            _log.warning("connect retry %d/%d: %s", attempt, self._RETRY_LIMIT, err)
             yield dim(f"\n⚠ {err} — retry {attempt}/{self._RETRY_LIMIT} in {int(self._RETRY_DELAY)}s\n")
             time.sleep(self._RETRY_DELAY)
 
@@ -183,7 +188,8 @@ class LLMClient:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8", errors="replace"))
             return str(payload.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-        except Exception:
+        except Exception as e:
+            _log.warning("raw_complete failed (degrading to no-op): %s", e)
             return ""
 
     def stream_complete(
@@ -281,7 +287,6 @@ class LLMClient:
         self, user_text: str, memory: str, status: dict[str, Any], context: list[dict],
         in_context: bool = True, reasoning: "str | None" = None,
     ) -> Iterator[str]:
-        headers = self._headers()
         url = f"{self.cfg.base_url}/chat/completions"
         body = self._reasoning_body({
             "model": self.cfg.model,
@@ -367,12 +372,20 @@ class LLMClient:
         acc: list[str] = []  # text of the in-flight turn, readable by `finally`
         finished = False
         try:
-            for _ in range(max_steps):
+            for step in range(max_steps):
                 acc.clear()
+                t0 = time.monotonic()
                 tool_calls, thinking_text, finish = yield from self._stream_turn(messages, tools, acc, reasoning)
                 text = "".join(acc).strip()
                 acc.clear()  # committed below — must not re-commit as "interrupted"
                 truncated = finish == "length"
+                _log.info(
+                    "turn %d/%d: model=%s finish=%s text=%d chars think=%d chars tools=%d in %.1fs",
+                    step + 1, max_steps, self.cfg.model, finish or "?", len(text),
+                    len(thinking_text), len(tool_calls), time.monotonic() - t0,
+                )
+                if truncated:
+                    _log.warning("response truncated by output limit (finish=length, tools=%d)", len(tool_calls))
 
                 # DeepSeek thinking mode requires reasoning_content echoed on
                 # replayed assistant tool-call messages; everyone else gets it
@@ -430,6 +443,7 @@ class LLMClient:
                 if partial:
                     # Operator interrupt mid-stream: keep the partial turn so the
                     # model remembers it was halfway through something.
+                    _log.info("stream abandoned mid-turn; committed %d partial chars", len(partial))
                     record({"role": "assistant", "content": partial + self.INTERRUPT_MARK})
 
     def _stream_turn(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, text_out: list[str], reasoning: "str | None" = None):
@@ -448,6 +462,8 @@ class LLMClient:
             body["tools"] = tools
             body["tool_choice"] = "auto"
         data = json.dumps(body).encode("utf-8")
+        _log.debug("request: model=%s messages=%d tools=%d body=%d bytes",
+                   self.cfg.model, len(messages), len(tools or []), len(data))
         acc: dict[int, dict[str, str]] = {}
         reasoning_parts: list[str] = []
         finish_reason = ""

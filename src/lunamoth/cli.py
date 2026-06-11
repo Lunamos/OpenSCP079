@@ -95,6 +95,8 @@ def _stop_daemon(meta: S.SessionMeta) -> bool:
 
 def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
     _activate(meta)
+    if getattr(args, "debug", False):
+        os.environ["LUNAMOTH_DEBUG"] = "1"
     # Attaching adopts a backgrounded agent: pause its daemon so the two don't
     # both write the session, then resume it in the background when we detach.
     was_daemon = meta.daemon_pid() is not None
@@ -328,6 +330,18 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         line("bubblewrap (simple sandbox)", bool(shutil.which("bwrap")), "install: apt/dnf install bubblewrap")
     line("docker (optional)", bool(shutil.which("docker")))
     print(f"  home: {S.lunamoth_home()}  sessions: {len(S.list_sessions())}")
+    # Diagnostics live per chara, next to its audit trail.
+    for m in S.list_sessions():
+        log_dir = m.sandbox_dir / "logs"
+        err_file = log_dir / "errors.log"
+        last_error = ""
+        try:
+            lines = [ln for ln in err_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if lines:
+                last_error = f"  last error: {lines[-1][:120]}"
+        except OSError:
+            pass
+        print(f"  logs[{m.name}]: {log_dir}{last_error}")
     return 0
 
 
@@ -397,6 +411,7 @@ def _add_tui_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-forever", action="store_true", help=argparse.SUPPRESS)  # pre-rename alias for --mode chat
     p.add_argument("--plain", action="store_true", help="legacy plain terminal instead of the TUI")
     p.add_argument("--clean-on-exit", action="store_true", help="wipe the session sandbox on shutdown (default: persist)")
+    p.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics in the chara's sandbox/logs/")
 
 
 def build_parser() -> argparse.ArgumentParser:
