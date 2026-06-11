@@ -12,7 +12,9 @@
     "write_file",
     "inspect_env",
     "write_log",
-    "request_permission"
+    "request_permission",
+    "add_goal",
+    "set_goal_status"
   ],
   "note": "Network is OFF by default; the operator can enable it at runtime (TUI: /net on), or you can ask for it with request_permission while the operator is present."
 }

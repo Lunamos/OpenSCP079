@@ -39,5 +39,6 @@ def clean_runtime_sandbox(clear_memory: bool = True) -> None:
         # (WAL/SHM sidecars included).
         for suffix in ("", "-wal", "-shm"):
             (SANDBOX_ROOT / f"transcript.db{suffix}").unlink(missing_ok=True)
+        (SANDBOX_ROOT / "goals.json").unlink(missing_ok=True)
     else:
         (workspace / "memory.txt").touch()

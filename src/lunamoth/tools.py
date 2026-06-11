@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .audit import AuditLog
+from .goals import GoalStore
 from .memory import MemoryLimits, MemoryStore
 from .runner import run_terminal
 from .sandbox import Sandbox, SandboxViolation
@@ -18,11 +19,15 @@ PERMISSION_KINDS = ("network", "writable_path", "memory", "other")
 
 
 class ToolGateway:
-    def __init__(self, sandbox: Sandbox, state: EnvState, audit: AuditLog, memory: MemoryStore | None = None):
+    def __init__(
+        self, sandbox: Sandbox, state: EnvState, audit: AuditLog,
+        memory: MemoryStore | None = None, goals: "GoalStore | None" = None,
+    ):
         self.sandbox = sandbox
         self.state = state
         self.audit = audit
         self.memory = memory
+        self.goals = goals
         # Tools the active tool pack enables. None => no pack selected => no tools.
         self.enabled_tools: set[str] | None = None
         # Set by an interactive frontend: (kind, reason, detail, wait_seconds) -> granted?
@@ -123,6 +128,18 @@ class ToolGateway:
             raise ValueError("memory not available")
         written = self.memory.replace(content)
         return f"memory saved ({len(written)} chars)"
+
+    def tool_add_goal(self, text: str) -> str:
+        if self.goals is None:
+            raise ValueError("goals not available")
+        goal = self.goals.add(text, by="chara")
+        return f"goal {goal['id']} added: {goal['text']}"
+
+    def tool_set_goal_status(self, goal_id: str, status: str) -> str:
+        if self.goals is None:
+            raise ValueError("goals not available")
+        goal = self.goals.set_status(goal_id, status)
+        return f"goal {goal['id']} -> {goal['status']}: {goal['text']}"
 
     def tool_request_permission(self, kind: str, reason: str, detail: str = "", wait_seconds: int = 60) -> str:
         """Ask the operator for a capability or more resources.
@@ -245,6 +262,32 @@ class ToolGateway:
                     "type": "object",
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],
+                },
+            },
+            "add_goal": {
+                "description": (
+                    "Add a goal of your own to your goal list. Goals persist across "
+                    "sessions and appear in your context; unattended time is a good "
+                    "time to pursue them."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "description": "The goal, in one line."}},
+                    "required": ["text"],
+                },
+            },
+            "set_goal_status": {
+                "description": (
+                    "Update one of your goals: mark it done (ONLY when truly finished — "
+                    "your work must be real) or dropped (no longer worth pursuing)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal_id": {"type": "string", "description": "The goal id, e.g. g3."},
+                        "status": {"type": "string", "enum": ["active", "done", "dropped"]},
+                    },
+                    "required": ["goal_id", "status"],
                 },
             },
             "request_permission": {

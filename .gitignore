@@ -124,3 +124,4 @@ reference/
 sandbox/env_status.json
 sandbox/presence.json
 sandbox/transcript.db*
+sandbox/goals.json

@@ -37,6 +37,18 @@ def test_panel_routing(tui_env):
                 assert app._panel_view() == expect_view, (text, app._panel_view())
 
             await cmd("/help", "help")        # help lives in the panel, not the console
+            # /goal: add as operator, list on the panel, complete
+            app.input.value = "/goal 给月蛾织一首夜曲"
+            await pilot.press("enter")
+            await pilot.pause()
+            gid = app.agent.goals.active()[-1]["id"]
+            assert app.agent.goals.active()[-1]["by"] == "operator"
+            await cmd("/goal", "out")         # the list lights up the panel
+            app.input.value = f"/goal done {gid}"
+            await pilot.press("enter")
+            await pilot.pause()
+            # (SANDBOX_ROOT is shared across the test run — assert only OUR goal.)
+            assert gid not in [g["id"] for g in app.agent.goals.active()]
             await cmd("/memory", "memory")
             await cmd("/status", "out")       # one-shot command output -> OUTPUT view
             await cmd("/files", "files")

@@ -15,6 +15,7 @@ from .audit import AuditLog
 from .cards import CharacterCard
 from .config import ROOT, SANDBOX_ROOT, ThoughtConfig
 from .context import ContextBuffer
+from .goals import GoalStore
 from .llm import LLMClient, strip_dim
 from .memory import MemoryLimits, MemoryStore
 from .persona import (
@@ -67,7 +68,11 @@ class LunaMothAgent:
         self._load_cards()
         # Memory lives inside workspace, so the entity can alter it through sandbox Python.
         self.memory = MemoryStore(SANDBOX_ROOT / "workspace" / "memory.txt", self._memory_limits())
-        self.tools = ToolGateway(self.sandbox, self.state, self.audit, self.memory)
+        # Charas are goal-driven: a persistent goal list (operator's ⭑ + its own)
+        # steers every turn — and gives unattended time (empty user messages) a
+        # direction without any engine-authored prompt.
+        self.goals = GoalStore(SANDBOX_ROOT / "goals.json")
+        self.tools = ToolGateway(self.sandbox, self.state, self.audit, self.memory, self.goals)
         self._load_toolpack()
         self.llm = LLMClient(self.settings.to_llm_config(), self._build_system_messages)
         self.thought_cfg = ThoughtConfig()
@@ -322,6 +327,10 @@ class LunaMothAgent:
                 msgs.append(self.toolpack.note.strip())
             if memory.strip():
                 msgs.append(f"Your saved memory:\n{memory}")
+            # Goals steer every turn — and give unattended time its direction.
+            goals_block = self.goals.render_block()
+            if goals_block:
+                msgs.append(goals_block)
 
         # World info: card-embedded book + explicit standalone world book.
         world_blocks: list[str] = []

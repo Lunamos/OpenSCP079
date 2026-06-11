@@ -14,7 +14,7 @@ DEFAULT_STATUS = {
     "tool_access": [
         "inspect_env", "read_memory", "write_memory", "list_files", "read_file",
         "list_workspace", "read_workspace_file", "write_file", "write_log", "terminal",
-        "request_permission",
+        "request_permission", "add_goal", "set_goal_status",
     ],
 }
 
@@ -51,11 +51,13 @@ class EnvState:
         if isinstance(access, list) and "inspect_cell" in data.get("tool_access", []):
             data["tool_access"] = ["inspect_env" if t == "inspect_cell" else t for t in data["tool_access"]]
             changed = True
-        # State files written before presence awareness: grant the new request tool.
+        # State files written before newer built-in tools: grant them.
         access = data.get("tool_access")
-        if isinstance(access, list) and "terminal" in access and "request_permission" not in access:
-            access.append("request_permission")
-            changed = True
+        if isinstance(access, list) and "terminal" in access:
+            for new_tool in ("request_permission", "add_goal", "set_goal_status"):
+                if new_tool not in access:
+                    access.append(new_tool)
+                    changed = True
         data.setdefault("isolation", "sandbox")
         data.setdefault("user_present", False)
         if changed:

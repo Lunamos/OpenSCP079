@@ -48,6 +48,7 @@ Each unchecked item below is scoped to be independently completable — it lists
 
 - [x] **Hermes-grade context management** — full message dicts in the durable history (assistant tool calls, tool results and reasoning survive restarts, so the chara remembers what it ran); interrupts commit the partial turn and never lose your instruction; output-limit truncation gets explicit continue/split-it prompts instead of silent cuts; old idle monologues age out of the API view so self-talk can't bury your last instruction
 
+- [x] **Goal-driven charas** — a persistent per-chara goal list (`/goal` for the operator's ⭑ goals; `add_goal`/`set_goal_status` tools for the chara's own) steers every turn and gives unattended time its direction; completion is self-reported under the honesty rules — no SillyTavern-Objective-style double API calls
 - [x] **Honest failure policy** — transient connection failures retry every 5s up to 5 times (Claude-Code style, with dim retry notices), then the error surfaces as-is; permanent errors (auth, bad request) surface immediately. NO fallback model and NO fabricated output anywhere — a failed request is a failed request
 
 **Compatibility & extensibility**
@@ -170,7 +171,7 @@ lunamoth --patience 4     # pause between its spontaneous cycles (live mode)
 lunamoth --plain          # legacy plain terminal mode
 ```
 
-In-session: `/help`, `/status`, `/memory`, `/files`, `/mode live|chat`, `/reasoning`, `/net on|off`, `/allow-dir <path>`, `/patience <s>`, `/panel`, `/theme`, `/settings`, `/clear`, `/exit` — verbose output lights up the right-side **spotlight panel** (telemetry / memory / file tree with click-to-preview / operator terminal / help), so the console stays a clean chat log. `! <cmd>` runs YOUR shell command in the chara's sandbox (same jail, output in the panel); `Esc` brings the panel home to telemetry.
+In-session: `/help`, `/goal`, `/status`, `/memory`, `/files`, `/mode live|chat`, `/reasoning`, `/net on|off`, `/allow-dir <path>`, `/patience <s>`, `/panel`, `/theme`, `/settings`, `/clear`, `/exit` — verbose output lights up the right-side **spotlight panel** (telemetry / memory / file tree with click-to-preview / operator terminal / help), so the console stays a clean chat log. `! <cmd>` runs YOUR shell command in the chara's sandbox (same jail, output in the panel); `Esc` brings the panel home to telemetry.
 
 ## License & acknowledgements
 

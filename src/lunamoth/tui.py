@@ -26,6 +26,7 @@ from textual.widgets import (
 SLASH_COMMANDS = [
     "/help", "/status", "/memory", "/memory_path", "/files", "/workspace",
     "/read", "/wread", "/write", "/logs", "/reset",
+    "/goal", "/goal done", "/goal drop",
     "/mode live", "/mode chat", "/patience", "/reasoning", "/thinking on", "/thinking off",
     "/theme", "/net on", "/net off",
     "/allow-dir", "/panel", "/settings", "/clear", "/exit",
@@ -1182,6 +1183,34 @@ class LunaMothTUI(App):
         if low in {"/clear", "/cls"}:
             await self.action_clear_display()
             return
+        if low.startswith("/goal"):
+            rest = text[len("/goal"):].strip()
+            parts = rest.split(maxsplit=1)
+            try:
+                if not rest:
+                    goals = self.agent.goals.all()
+                    if not goals:
+                        body = "(no goals yet)\n\n/goal <text>      add a goal (yours show as ⭑)\n/goal done g3     mark done\n/goal drop g3     drop it"
+                    else:
+                        icon = {"active": "○", "done": "●", "dropped": "✕"}
+                        lines = []
+                        for g in goals:
+                            mark = "⭑ " if g.get("by") == "operator" else ""
+                            lines.append(f"{icon.get(g['status'], '?')} {g['id']}  {mark}{g['text']}")
+                        body = "\n".join(lines) + "\n\n○ active  ● done  ✕ dropped\n/goal <text> · /goal done|drop <id>"
+                    self._console("/goal → panel", "grey50")
+                    self._panel_out("GOALS", body)
+                elif parts[0] in {"done", "drop", "active"} and len(parts) == 2:
+                    status = {"done": "done", "drop": "dropped", "active": "active"}[parts[0]]
+                    goal = self.agent.goals.set_status(parts[1].strip(), status)
+                    self._console(f"goal {goal['id']} → {goal['status']}", "grey50")
+                else:
+                    goal = self.agent.goals.add(rest, by="operator")
+                    self._console(f"goal {goal['id']} added ⭑ — it now steers every turn", "grey50")
+            except ValueError as e:
+                self._console(f"goal error: {e}", "red")
+            self._update_status()
+            return
         if low.startswith(("/patience", "/cooldown")):
             parts = text.split(maxsplit=1)
             if len(parts) == 2:
@@ -1319,6 +1348,8 @@ class LunaMothTUI(App):
             "Esc       panel back to telemetry",
             "/panel <view>  switch this panel by hand",
             "",
+            "/goal [text|done g3|drop g3]  the chara's",
+            "          goal list — goals steer every turn",
             "/memory   memory document (this panel)",
             "/files    sandbox file tree (click = preview)",
             "/status   environment + context size",
