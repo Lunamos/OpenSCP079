@@ -772,3 +772,33 @@ def test_wecom_callback_carries_msgid_for_dedup(monkeypatch):
         assert msg.message_id == "1456453720"  # MsgId wired through for the gateway dedup
     finally:
         adapter.close()
+
+
+# ---- QQ send while disconnected (audit #32) ------------------------------------------
+
+
+def test_qq_send_while_disconnected_is_delivery_deferred():
+    from lunamoth.messaging.base import DeliveryDeferred
+    from lunamoth.messaging.qq import QQAdapter
+
+    adapter = QQAdapter({"url": "ws://127.0.0.1:3001", "peer_id": "999"})
+    assert adapter._socket is None  # the reconnect loop owns the socket; it is down
+    with pytest.raises(DeliveryDeferred):
+        adapter.send("speak while the link is down")
+
+
+def test_qq_disconnected_send_does_not_crash_the_gateway(fast_send_retry, caplog):
+    import logging
+
+    from lunamoth.messaging.qq import QQAdapter
+
+    handle = FakeHandle()
+    adapter = QQAdapter({"url": "ws://127.0.0.1:3001", "peer_id": "999"})
+    gateway = MessagingGateway(handle=handle, adapters=[adapter], allowed_senders=["u1"], patience=999)
+
+    gateway.enqueue(adapter, InboundMessage("u1", "Alice", "hi", message_id="q1"))
+    with caplog.at_level(logging.ERROR, logger="lunamoth.messaging.gateway"):
+        assert gateway.tick(timeout=0)  # the turn runs; only delivery is deferred
+
+    assert handle.user_calls == ["hi"]
+    assert any("could not deliver" in m for m in caplog.messages)  # logged, not raised

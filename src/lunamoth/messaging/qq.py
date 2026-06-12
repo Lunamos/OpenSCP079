@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from .base import Adapter, InboundMessage
+from .base import Adapter, DeliveryDeferred, InboundMessage
 
 _log = logging.getLogger("lunamoth.messaging.qq")
 
@@ -137,11 +137,22 @@ class QQAdapter(Adapter):
         self._reply_target = ""
 
     def _send_frame(self, frame: dict[str, Any]) -> None:
+        """Send one OneBot frame, or defer visibly while disconnected (audit #32).
+
+        The reconnect loop owns the socket; during a reconnect window there is
+        nowhere to send. Simplest honest behavior: the message is DROPPED and
+        the gateway logs the deferral (DeliveryDeferred is the existing
+        logged-non-delivery semantics) — no queueing, no crash, no pretending
+        it was delivered. The chara can speak again once the link is back.
+        """
         payload = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
         with self._socket_lock:
             sock = self._socket
             if sock is None:
-                raise RuntimeError("QQ OneBot WebSocket is not connected")
+                raise DeliveryDeferred(
+                    "QQ OneBot WebSocket is disconnected (reconnect in progress); "
+                    "this message was dropped, not queued"
+                )
             sock.send(payload)
 
     def send(self, text: str) -> None:
