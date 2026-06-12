@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -23,6 +24,13 @@ _MIN_PERMISSION_WAIT = 5
 _MAX_MEMORY_CHARS = 64_000
 PERMISSION_KINDS = ("network", "writable_path", "memory", "other")
 
+# Tool-loop guardrails (audit #24; the shape of hermes agent/tool_guardrails.py).
+# An unattended chara re-running the same failing call all night is the same
+# failure family as the burned-key patience incident.
+GUARD_EXACT_WARN_AT = 2      # identical failing call: warn the model at the 2nd failure
+GUARD_EXACT_REFUSE_AT = 5    # ... and refuse the 5th identical attempt outright
+GUARD_STREAK_REFUSE_AT = 8   # consecutive failures of one tool (any args) before it is blocked
+
 
 class ToolGateway:
     def __init__(
@@ -44,6 +52,10 @@ class ToolGateway:
         # Set by an interactive frontend: (kind, reason, detail, wait_seconds) -> granted?
         # Blocks the calling (worker) thread up to wait_seconds. None => nobody to ask.
         self.permission_hook: "Callable[[str, str, str, int], bool] | None" = None
+        # Loop-guardrail state (audit #24): per-signature identical-failure counts
+        # and per-tool consecutive-failure streaks. See reset_guardrails().
+        self._guard_exact_failures: dict[str, int] = {}
+        self._guard_tool_streaks: dict[str, int] = {}
 
     def set_enabled(self, tools: "list[str] | set[str] | None", mcp_servers: "list[str] | None" = None) -> None:
         self.enabled_tools = set(tools) if tools is not None else None
@@ -63,8 +75,20 @@ class ToolGateway:
     def call(self, name: str, /, **kwargs: Any) -> dict[str, Any]:
         # `name` is positional-only: tool ARGUMENTS may legitimately be called
         # "name" too (read_skill/create_skill), and must not collide with it.
+        signature = self._guard_signature(name, kwargs)
+        refusal = self._guard_refusal(name, signature)
+        if refusal is not None:
+            self.audit.write("tool_loop_refused", tool=name, args=self._safe_args(kwargs), result=refusal)
+            _log.warning("%s refused by loop guard: %s", name, refusal["error"])
+            return refusal
         if name.startswith("mcp__"):
-            return self._call_mcp(name, kwargs)
+            result = self._call_mcp(name, kwargs)
+        else:
+            result = self._dispatch(name, kwargs)
+        return self._guard_record(name, signature, result)
+
+    def _dispatch(self, name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Run one built-in tool: allowlist gate, arg validation, exception boundary."""
         allowed = self._effective()
         if name not in allowed:
             result = {"ok": False, "error": f"tool denied: {name}"}
@@ -130,6 +154,58 @@ class ToolGateway:
 
     def _safe_args(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         return {k: (v[:300] if isinstance(v, str) else v) for k, v in kwargs.items()}
+
+    # ---- tool-loop guardrails (audit #24) -------------------------------------------
+
+    @staticmethod
+    def _guard_signature(name: str, kwargs: dict[str, Any]) -> str:
+        """SHA256 of tool name + canonical (sorted, compact) args — hermes' shape."""
+        canonical = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(f"{name}\x00{canonical}".encode("utf-8")).hexdigest()
+
+    def reset_guardrails(self) -> None:
+        """Clear loop-guardrail state. PUBLIC seam: call this where a fresh user
+        turn enters the agent (core/agent.py), so one stuck unattended stretch
+        doesn't keep a tool blocked once the operator redirects the chara."""
+        self._guard_exact_failures.clear()
+        self._guard_tool_streaks.clear()
+
+    def _guard_refusal(self, name: str, signature: str) -> "dict[str, Any] | None":
+        """Refuse a call BEFORE executing it when the loop guard has tripped.
+        Refusals are not recorded as failures — they must not compound state."""
+        streak = self._guard_tool_streaks.get(name, 0)
+        if streak >= GUARD_STREAK_REFUSE_AT:
+            return {"ok": False, "error": (
+                f"{name} is blocked: it failed {streak} times in a row. Stop using "
+                f"this tool for now and take a genuinely different approach — or tell "
+                f"your user about the blocker. (A fresh conversation turn unblocks it.)"
+            )}
+        failures = self._guard_exact_failures.get(signature, 0)
+        if failures >= GUARD_EXACT_REFUSE_AT - 1:
+            return {"ok": False, "error": (
+                f"refusing to run {name}: this exact call (same arguments) already "
+                f"failed {failures} times. Retrying it unchanged will not work — "
+                f"change the arguments or the strategy, or explain the blocker."
+            )}
+        return None
+
+    def _guard_record(self, name: str, signature: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Update guard state from one executed call; append the loop warning
+        to a repeated identical failure so the model sees it where it acts."""
+        if result.get("ok"):
+            self._guard_exact_failures.pop(signature, None)
+            self._guard_tool_streaks.pop(name, None)  # any success resets the streak
+            return result
+        failures = self._guard_exact_failures.get(signature, 0) + 1
+        self._guard_exact_failures[signature] = failures
+        self._guard_tool_streaks[name] = self._guard_tool_streaks.get(name, 0) + 1
+        if failures >= GUARD_EXACT_WARN_AT:
+            result = dict(result)
+            result["error"] = str(result.get("error", "")) + (
+                f"\n[loop guard: this exact {name} call has now failed {failures} times. "
+                f"Inspect the error and change strategy instead of retrying it unchanged.]"
+            )
+        return result
 
     # ---- tool implementations -----------------------------------------------------
 
