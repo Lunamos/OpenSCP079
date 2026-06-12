@@ -22,6 +22,39 @@ def test_timeout(tmp_path):
     assert "timed out" in out
 
 
+def test_timeout_with_pipe_holding_grandchild_returns_and_kills_group(tmp_path):
+    # The audit-#14 scar (hermes #17327): a background child inherits the
+    # stdout pipe; with subprocess.run(timeout=) only the leader dies and the
+    # post-timeout communicate() blocks until the grandchild exits (minutes).
+    # The killpg path must return promptly AND leave no survivor.
+    import subprocess
+    import time
+
+    ws = tmp_path / "workspace"
+    marker = "47.1359"  # an unusual sleep duration we can pgrep for
+    t0 = time.monotonic()
+    out = run_terminal(f"sleep {marker} & sleep 60", ws, isolation="dir", timeout=1)
+    assert time.monotonic() - t0 < 6  # bounded — not wedged on the held pipe
+    assert "timed out after 1s" in out
+    # The whole GROUP died, not just the leader: the background sleep is gone.
+    deadline = time.monotonic() + 3
+    alive = True
+    while time.monotonic() < deadline:
+        alive = subprocess.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True).returncode == 0
+        if not alive:
+            break
+        time.sleep(0.05)
+    assert not alive
+
+
+def test_timeout_keeps_partial_output(tmp_path):
+    ws = tmp_path / "workspace"
+    out = run_terminal("echo 早期输出; echo oops >&2; sleep 60", ws, isolation="dir", timeout=1)
+    assert "timed out after 1s" in out
+    assert "早期输出" in out  # what the command printed before the cut survives
+    assert "oops" in out
+
+
 def test_credentials_are_stripped(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
     ws = tmp_path / "workspace"

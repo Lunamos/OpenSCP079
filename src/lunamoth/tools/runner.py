@@ -22,8 +22,10 @@ supervisor's PTY shell can share them without importing tools/.
 """
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +45,79 @@ _log = get_logger("runner")
 
 DEFAULT_TIMEOUT = 30
 _OUTPUT_CAP = 12000
+_KILL_GRACE = 1.0    # seconds between SIGTERM and SIGKILL on timeout
+_DRAIN_DEADLINE = 1.0  # bounded non-blocking pipe drain after the group is killed
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGTERM -> grace -> SIGKILL, to the whole process GROUP, then reap.
+
+    `subprocess.run(timeout=)` kills only the leader; a grandchild keeps
+    running (and keeps the stdout pipe open, blocking the reader forever —
+    hermes scar #17327). Ordering discipline copied from server/pty.py
+    PtyBridge.close: killpg returns EPERM for a group mid-exit on macOS, so
+    fall back to signalling the leader directly.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = None
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if proc.poll() is not None:
+            break
+        try:
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                proc.send_signal(sig)
+        except OSError:
+            try:
+                proc.send_signal(sig)
+            except OSError:
+                pass
+        deadline = time.monotonic() + _KILL_GRACE
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+    try:
+        proc.wait(timeout=_KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        _log.error("terminal leader (pid %d) survived SIGKILL — abandoning, not blocking", proc.pid)
+
+
+def _drain_nonblocking(stream, deadline: float) -> bytes:
+    """Read whatever is immediately available from a pipe without ever blocking.
+
+    Even after the group is killed, a descendant that escaped the group (e.g.
+    a double-forked daemon) can hold the write end open — a blocking read
+    would hang forever despite the timeout. O_NONBLOCK + a wall-clock deadline
+    (the hermes _reconcile_local_exit drain shape).
+    """
+    if stream is None:
+        return b""
+    chunks: list[bytes] = []
+    try:
+        fd = stream.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    except (OSError, ValueError):
+        return b""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            time.sleep(0.02)  # writer still alive; give it a beat, bounded
+            continue
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break  # EOF — every writer is gone
+        chunks.append(chunk)
+    try:
+        stream.close()
+    except OSError:
+        pass
+    return b"".join(chunks)
 
 
 def run_terminal(
@@ -84,26 +159,44 @@ def run_terminal(
 
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=run_cwd,
             env=_base_env(workspace),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            start_new_session=True,  # own process group so timeout kills children
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # own process group so the timeout path can killpg it
         )
-    except subprocess.TimeoutExpired:
-        _log.warning("terminal command timed out after %ds (%s): %.120s", timeout, isolation, command)
-        return f"[timed out after {timeout}s]{note}"
     except FileNotFoundError as e:
         _log.error("terminal runner unavailable (%s): %s", isolation, e)
         return f"[runner error: {e}]{note}"
+    try:
+        out_b, err_b = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _log.warning("terminal command timed out after %ds (%s): %.120s", timeout, isolation, command)
+        _kill_group(proc)
+        try:
+            # The group is dead, so the pipes EOF immediately and this recovers
+            # the partial output communicate() had already buffered. Bounded:
+            # a descendant that escaped the group (setsid daemon) can still
+            # hold the pipes open, hence the timeout + non-blocking fallback.
+            out_b, err_b = proc.communicate(timeout=_DRAIN_DEADLINE)
+        except subprocess.TimeoutExpired:
+            out_b = _drain_nonblocking(proc.stdout, _DRAIN_DEADLINE)
+            err_b = _drain_nonblocking(proc.stderr, _DRAIN_DEADLINE)
+        parts = [f"[timed out after {timeout}s]"]
+        out = out_b.decode("utf-8", errors="replace")[-_OUTPUT_CAP:].strip()
+        err = err_b.decode("utf-8", errors="replace")[-2000:].strip()
+        if out:
+            parts.append(f"partial STDOUT:\n{out}")
+        if err:
+            parts.append(f"partial STDERR:\n{err}")
+        return ("\n".join(parts) + note).strip()
     _log.info("terminal (%s, net=%s) exit=%d in %.1fs: %.120s",
               isolation, "on" if allow_network else "off", proc.returncode, time.monotonic() - t0, command)
 
-    out = (proc.stdout or "")[-_OUTPUT_CAP:]
-    err = (proc.stderr or "")[-2000:]
+    out = (out_b or b"").decode("utf-8", errors="replace")[-_OUTPUT_CAP:]
+    err = (err_b or b"").decode("utf-8", errors="replace")[-2000:]
     parts = [f"exit={proc.returncode}"]
     if out:
         parts.append(f"STDOUT:\n{out}")

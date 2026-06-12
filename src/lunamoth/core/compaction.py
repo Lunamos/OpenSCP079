@@ -23,12 +23,76 @@ this and passes its LLMClient in.
 """
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
+
+from ..obs import get_logger
 from .context import ContextBuffer, _msg_text, estimate_tokens
+
+_log = get_logger("compaction")
 
 THRESHOLD_RATIO = 0.75       # compact once the window is this full
 _TAIL_RATIO = 0.25           # keep this fraction of the window as verbatim tail
 _TAIL_MIN_TOKENS = 2000
 _TOOL_RESULT_CLIP = 240      # one-line old tool output summaries for the summarizer
+
+# Anti-thrashing guard (audit #10, hermes context_compressor scar #40803):
+# should_compact() re-fires every turn once over threshold, so a failing or
+# non-shrinking summary call would burn one LLM call per turn FOREVER — the
+# same failure family as the burned-key patience incident.
+_MIN_SHRINK = 0.10              # a compaction saving less than this is "ineffective"
+_INEFFECTIVE_LIMIT = 2          # consecutive ineffective compactions before backing off
+_REGROW_STEP = 1.10             # resume once the window grows 10% past where the guard engaged
+_FAILURE_COOLDOWN = 300.0       # seconds without retry after a summarizer error
+
+_now = time.monotonic  # patchable in tests
+
+
+@dataclass
+class _Guard:
+    ineffective: int = 0
+    cooldown_until: float = 0.0
+    resume_above: float = 0.0   # token level the window must grow past to re-arm
+
+    def allows(self, tokens: int) -> bool:
+        if _now() < self.cooldown_until:
+            return False
+        if self.ineffective >= _INEFFECTIVE_LIMIT:
+            if tokens > self.resume_above:
+                # The window genuinely grew past the next step — re-arm.
+                self.ineffective = 0
+                self.resume_above = 0.0
+                return True
+            return False
+        return True
+
+    def record_failure(self) -> None:
+        self.cooldown_until = _now() + _FAILURE_COOLDOWN
+        _log.warning("summarizer failed — compaction paused for %.0fs (trim backstop remains)", _FAILURE_COOLDOWN)
+
+    def record_ineffective(self, tokens: int) -> None:
+        self.ineffective += 1
+        if self.ineffective >= _INEFFECTIVE_LIMIT:
+            self.resume_above = tokens * _REGROW_STEP
+            _log.warning(
+                "last %d compactions saved <%d%% each — pausing until the window grows past ~%d tokens",
+                self.ineffective, int(_MIN_SHRINK * 100), int(self.resume_above),
+            )
+
+    def record_success(self) -> None:
+        self.ineffective = 0
+        self.cooldown_until = 0.0
+        self.resume_above = 0.0
+
+
+def _guard(ctx: ContextBuffer) -> _Guard:
+    """One guard per live ContextBuffer, stored on the buffer itself so its
+    lifecycle (sessions, /reset, tests) follows the window it guards."""
+    g = getattr(ctx, "_compaction_guard", None)
+    if g is None:
+        g = _Guard()
+        ctx._compaction_guard = g  # type: ignore[attr-defined]
+    return g
 
 _HEADER = {
     "en": "[Earlier conversation — a summary of everything before the recent messages]\n",
@@ -129,17 +193,35 @@ def _budget(ctx: ContextBuffer) -> int:
 
 def should_compact(ctx: ContextBuffer, llm) -> bool:
     budget = _budget(ctx)
-    return bool(llm and llm.is_live()) and budget > 0 and ctx.token_count() >= THRESHOLD_RATIO * budget
+    if not (llm and llm.is_live()) or budget <= 0:
+        return False
+    tokens = ctx.token_count()
+    if tokens < THRESHOLD_RATIO * budget:
+        return False
+    return _guard(ctx).allows(tokens)
 
 
 def compact(ctx: ContextBuffer, lang: str, llm, *, force: bool = False) -> bool:
     """Replace the old head of the window with one summary message. Returns True
-    if it changed anything. Safe to call any time; no-ops when not worth it."""
+    if it changed anything. Safe to call any time; no-ops when not worth it.
+
+    Guarded against thrash (audit #10): consecutive ineffective compactions
+    back it off until the window regrows; a summarizer failure pauses retries
+    for _FAILURE_COOLDOWN. The buffer's own trim() remains the sanctioned
+    backstop either way. `force` (the operator's explicit /compact) bypasses
+    and clears the guard — hermes lets manual compression through the cooldown."""
     budget = _budget(ctx)
     if not (llm and llm.is_live()) or budget <= 0:
         return False
-    if not force and ctx.token_count() < THRESHOLD_RATIO * budget:
-        return False
+    tokens_before = ctx.token_count()
+    guard = _guard(ctx)
+    if force:
+        guard.cooldown_until = 0.0
+    else:
+        if tokens_before < THRESHOLD_RATIO * budget:
+            return False
+        if not guard.allows(tokens_before):
+            return False
 
     msgs = ctx.messages
     if len(msgs) < 4:
@@ -155,15 +237,25 @@ def compact(ctx: ContextBuffer, lang: str, llm, *, force: bool = False) -> bool:
             cut = i
             break
     if cut is None or cut < 2:   # whole thing fits in the tail → nothing old to fold
+        # Over threshold but nothing compactable: without counting this the
+        # guard never fires and every turn re-walks a no-op (#40803).
+        if not force:
+            guard.record_ineffective(tokens_before)
         return False
 
     summary = _summarize(msgs[:cut], lang, budget, llm)
     if not summary:
+        guard.record_failure()
         return False
 
     summary_msg = {"role": "system", "content": _HEADER[_lang(lang)] + summary, "kind": "summary"}
     tail = [dict(m) for m in msgs[cut:]]
     ctx.messages = [summary_msg] + tail
+    tokens_after = ctx.token_count()
+    if tokens_before > 0 and (tokens_before - tokens_after) / tokens_before < _MIN_SHRINK:
+        guard.record_ineffective(tokens_after)
+    else:
+        guard.record_success()
     if ctx.persist is not None:
         try:
             ctx.persist(summary_msg)

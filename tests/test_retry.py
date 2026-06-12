@@ -102,3 +102,63 @@ def test_idle_cycle_failure_surfaces_without_fallback(agent, monkeypatch):
         list(a.stream_think(s))
     # No fabricated "cycle 0042: buffer stable" output ever enters the context.
     assert all(m.get("kind") != "think" for m in s.context.messages)
+
+
+# ---- empty-completion detection (audit #4) ---------------------------------------------
+# A stream ending with no content, no tool calls and no finish_reason used to
+# record assistant {content: None} and end the turn SILENTLY — an invisible
+# non-answer. Now: bounded retry, then a visible error.
+
+
+def _patch_turns(monkeypatch, turns):
+    """Each entry: (text, tool_calls, thinking, finish). Pops one per call."""
+    from lunamoth.core.llm import LLMClient
+
+    def fake_stream_turn(self, messages, tools, text_out, reasoning=None, channel="say"):
+        text, tool_calls, thinking, finish = turns.pop(0)
+        if text:
+            text_out.append(text)
+        return (tool_calls, thinking, finish)
+        yield  # pragma: no cover — makes this a generator (yield from compatible)
+
+    monkeypatch.setattr(LLMClient, "_stream_turn", fake_stream_turn)
+
+
+def _agent_events(client, record=None):
+    return list(client.stream_agent("hi", [], ["sys"], [], tools=None, execute=lambda tc: {}, record=record))
+
+
+def test_truly_empty_stream_retries_then_raises_visibly(monkeypatch, no_sleep):
+    _patch_turns(monkeypatch, [("", [], "", "")] * 4)  # empty forever
+    recorded = []
+    with pytest.raises(RuntimeError, match="empty stream"):
+        _agent_events(_client(), record=recorded.append)
+    # Nothing fabricated, nothing silently recorded: no assistant {content: None}.
+    assert all(m.get("content") is not None for m in recorded)
+
+
+def test_empty_retry_notices_are_visible(monkeypatch, no_sleep):
+    from lunamoth.protocol import Notice
+
+    _patch_turns(monkeypatch, [("", [], "", "")] * 4)
+    events = []
+    try:
+        for ev in _client().stream_agent("hi", [], ["sys"], [], tools=None, execute=lambda tc: {}):
+            events.append(ev)
+    except RuntimeError:
+        pass
+    retries = [e for e in events if isinstance(e, Notice) and e.kind == "retry"]
+    assert len(retries) == 3  # every retry is announced, never silent
+
+
+def test_reasoning_only_exhaustion_is_distinguished(monkeypatch, no_sleep):
+    _patch_turns(monkeypatch, [("", [], "long private thinking", "stop")] * 4)
+    with pytest.raises(RuntimeError, match="reasoning-only.*thinking exhausted"):
+        _agent_events(_client())
+
+
+def test_empty_then_real_reply_recovers(monkeypatch, no_sleep):
+    _patch_turns(monkeypatch, [("", [], "", ""), ("", [], "", ""), ("here.", [], "", "stop")])
+    recorded = []
+    _agent_events(_client(), record=recorded.append)  # no exception
+    assert recorded and recorded[-1]["content"] == "here."  # the recovered turn is committed

@@ -26,6 +26,10 @@ DEFAULT_REFUSAL = (
     "configured contacts."
 )
 
+# One bounded retry for a failed adapter.send() before that message is dropped
+# (hermes stream_consumer.py: failed sends retried once after 3 s, then degrade).
+_SEND_RETRY_DELAY = 3.0
+
 
 def config_path() -> Path:
     root = os.getenv("LUNAMOTH_CONFIG_DIR")
@@ -285,10 +289,36 @@ class MessagingGateway:
         return "".join(chunks).strip()
 
     def _send(self, adapter: Adapter, text: str) -> None:
+        """Deliver one outbound message, containing send failures (audit #31).
+
+        A transient socket error on SEND must never crash the gateway process
+        (which would drop the whole inbox into a 60 s supervisor backoff): one
+        bounded retry after _SEND_RETRY_DELAY, then THIS message is dropped
+        with an ERROR log and the loop carries on. Configuration errors at
+        startup (make_adapters / from_config) still crash — visible, correct.
+        """
         max_len = int(getattr(adapter, "max_message_length", 0) or 0)
         parts = split_text(text, max_len) if max_len else [text]
         for part in parts:
-            try:
-                adapter.send(part)
-            except DeliveryDeferred as e:
-                _log.error("messaging adapter %s could not deliver: %s", adapter.name, e)
+            for attempt in (1, 2):
+                try:
+                    adapter.send(part)
+                    break
+                except DeliveryDeferred as e:
+                    # The adapter consciously deferred (e.g. no reply window
+                    # open) — retrying won't change that; log and move on.
+                    _log.error("messaging adapter %s could not deliver: %s", adapter.name, e)
+                    break
+                except Exception as e:
+                    if attempt == 1:
+                        _log.warning(
+                            "messaging adapter %s send failed (%s: %s) — one retry in %gs",
+                            adapter.name, type(e).__name__, e, _SEND_RETRY_DELAY,
+                        )
+                        time.sleep(_SEND_RETRY_DELAY)
+                        continue
+                    _log.error(
+                        "messaging adapter %s dropped a message after retry (%s: %s): %.80s",
+                        adapter.name, type(e).__name__, e, part,
+                    )
+                    return  # drop the rest of THIS message; the gateway lives on

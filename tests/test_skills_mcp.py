@@ -2,6 +2,7 @@
 import json
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -109,6 +110,84 @@ def test_mcp_pack_opt_in(mcp):
     assert mcp.allowed_servers(["*"]) == ["fake"]
     assert mcp.allowed_servers(["fake", "ghost"]) == ["fake"]
     assert mcp.allowed_servers([]) == [] and mcp.allowed_servers(None) == []
+
+
+# A server that answers the handshake but hangs forever on tools/call —
+# the audit-#19 wedge: without a real RPC timeout this blocked the turn forever.
+_HANGING_SERVER = textwrap.dedent("""
+    import json, sys, time
+    for line in sys.stdin:
+        msg = json.loads(line)
+        if "id" not in msg:
+            continue
+        m = msg["method"]
+        if m == "initialize":
+            r = {"protocolVersion": "2025-03-26", "capabilities": {}}
+        elif m == "tools/list":
+            r = {"tools": [{"name": "hang", "description": "Never answers.",
+                            "inputSchema": {"type": "object", "properties": {}}}]}
+        else:
+            time.sleep(3600)
+            r = {}
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": r}) + "\\n")
+        sys.stdout.flush()
+""")
+
+# A server that never answers anything — hung handshake.
+_MUTE_SERVER = "import time; time.sleep(3600)"
+
+
+def _manager(tmp_path, script):
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {"hung": {"command": sys.executable, "args": ["-c", script]}}
+    }), encoding="utf-8")
+    return McpManager(config_dir=tmp_path)
+
+
+def test_mcp_call_timeout_kills_and_marks_dead(tmp_path, monkeypatch):
+    import lunamoth.tools.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "_CALL_TIMEOUT", 0.3)
+    mgr = _manager(tmp_path, _HANGING_SERVER)
+    try:
+        assert mgr.schemas(["hung"])  # handshake works
+        client = mgr._client("hung")
+        proc = client.proc
+        t0 = time.monotonic()
+        with pytest.raises(mcp_mod.McpError, match="timed out"):
+            mgr.call("mcp__hung__hang", {})
+        assert time.monotonic() - t0 < 5  # bounded, not a wedge
+        # The hung server was killed AND reaped — no zombie, no orphan.
+        assert proc.poll() is not None
+        # Marked dead: the next call fails fast instead of restart-and-hang.
+        t0 = time.monotonic()
+        with pytest.raises(mcp_mod.McpError, match="disabled"):
+            mgr.call("mcp__hung__hang", {})
+        assert time.monotonic() - t0 < 0.2
+    finally:
+        mgr.close_all()
+
+
+def test_mcp_hung_handshake_does_not_wedge_schemas(tmp_path, monkeypatch):
+    import lunamoth.tools.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "_CONNECT_TIMEOUT", 0.3)
+    mgr = _manager(tmp_path, _MUTE_SERVER)
+    try:
+        t0 = time.monotonic()
+        assert mgr.schemas(["hung"]) == []  # skipped, no fabricated entries
+        assert time.monotonic() - t0 < 5
+    finally:
+        mgr.close_all()
+
+
+def test_mcp_close_reaps_the_server(mcp):
+    mcp.schemas(["fake"])  # spawn it
+    proc = mcp._client("fake").proc
+    assert proc.poll() is None
+    mcp.close_all()
+    assert proc.poll() is not None  # waited for, not just signalled
 
 
 # ---- gateway integration ----------------------------------------------------------------

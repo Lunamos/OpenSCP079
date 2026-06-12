@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import random
+import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn
 
 from ..config import LLMConfig
 from ..obs import get_logger
@@ -29,6 +31,94 @@ _REASONING_PREFIXES = (
     "deepseek/", "anthropic/", "openai/", "x-ai/", "google/gemini-2", "google/gemma-4",
     "qwen/qwen3", "tencent/hy3-preview", "xiaomi/", "nousresearch/",
 )
+
+
+# ---- stream stall watchdog (audit #1, hermes chat_completion_helpers) ------------------
+# SSE keep-alives defeat socket read timeouts: the socket sees traffic while no
+# real chunk arrives. So the watchdog is a PAYLOAD-level wall clock — only
+# content/reasoning/tool-call deltas (and finish_reason) reset it. The stall
+# budget scales with the prompt: reasoning models legitimately pause for
+# minutes mid-stream while thinking over large contexts (hermes scales 180 →
+# 240 s above 50k tokens → 300 s above 100k). Plus a first-byte deadline for
+# endpoints that accept the connection and never emit one event.
+_FIRST_BYTE_TIMEOUT = 60.0
+_STALL_TIMEOUT = 180.0
+_STALL_TIMEOUT_50K = 240.0
+_STALL_TIMEOUT_100K = 300.0
+
+
+def _stall_timeout_for(body_bytes: int) -> float:
+    est_tokens = body_bytes // 4  # rough chars→tokens; only a threshold pick
+    if est_tokens > 100_000:
+        return _STALL_TIMEOUT_100K
+    if est_tokens > 50_000:
+        return _STALL_TIMEOUT_50K
+    return _STALL_TIMEOUT
+
+
+class StreamStall(RuntimeError):
+    """The provider stopped sending payload mid-stream; the request was aborted."""
+
+
+class _StallGuard:
+    """Wall-clock watchdog around a urllib streaming response.
+
+    urllib has no per-read timeout we can trust here (keep-alive bytes reset
+    it), so a daemon reader thread feeds raw lines into a queue and `lines()`
+    waits on the queue with a deadline anchored at the last PAYLOAD chunk —
+    the consumer calls `mark_payload()` when it sees one. On expiry the
+    response is closed and StreamStall raised: a visible error, never a hang.
+    """
+
+    _EOF = object()
+
+    def __init__(self, resp, first_byte_timeout: "float | None" = None, stall_timeout: "float | None" = None):
+        self._resp = resp
+        self._first_byte = _FIRST_BYTE_TIMEOUT if first_byte_timeout is None else first_byte_timeout
+        self._stall = _STALL_TIMEOUT if stall_timeout is None else stall_timeout
+        self._q: "queue.Queue[Any]" = queue.Queue()
+        self._mark = time.monotonic()
+        self._got_first = False
+        threading.Thread(target=self._read, name="lunamoth-stream-reader", daemon=True).start()
+
+    def _read(self) -> None:
+        try:
+            for raw in self._resp:
+                self._q.put(raw)
+        except Exception as e:  # socket death, close() during a stall abort
+            self._q.put(e)
+            return
+        self._q.put(self._EOF)
+
+    def mark_payload(self) -> None:
+        self._mark = time.monotonic()
+
+    def lines(self) -> "Iterator[bytes]":
+        while True:
+            limit = self._stall if self._got_first else self._first_byte
+            remaining = self._mark + limit - time.monotonic()
+            if remaining <= 0:
+                self._abort(limit)
+            try:
+                item = self._q.get(timeout=remaining)
+            except queue.Empty:
+                self._abort(limit)
+            if item is self._EOF:
+                return
+            if isinstance(item, Exception):
+                raise RuntimeError(f"stream read failed: {item}") from item
+            if not self._got_first:
+                self._got_first = True
+                self._mark = time.monotonic()  # first byte arrived; the stall clock starts here
+            yield item
+
+    def _abort(self, limit: float) -> NoReturn:
+        try:
+            self._resp.close()
+        except Exception:
+            pass
+        what = "no stream data at all" if not self._got_first else "no payload chunk"
+        raise StreamStall(f"stream stalled — {what} for {limit:.0f}s; connection aborted")
 
 
 class LLMClient:
@@ -273,8 +363,10 @@ class LLMClient:
         data = json.dumps(body).encode("utf-8")
         flow = ""  # "" | "think" | "speech" — for newline transitions around thinking
         resp = yield from self._connect_with_retry(url, data, timeout=90)
-        with resp:
-                for raw in resp:
+        guard = _StallGuard(resp, stall_timeout=_stall_timeout_for(len(data)))
+        try:
+            with resp:
+                for raw in guard.lines():
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
@@ -289,6 +381,7 @@ class LLMClient:
                     delta = payload.get("choices", [{}])[0].get("delta", {})
                     thinking = delta.get("reasoning_content") or delta.get("reasoning")
                     if thinking:
+                        guard.mark_payload()
                         # Reasoning travels as ThinkDelta; the flow-transition
                         # newlines ride in the same event type so a frontend
                         # that hides thinking leaks nothing.
@@ -299,10 +392,15 @@ class LLMClient:
                         yield ThinkDelta(thinking)
                     chunk = delta.get("content")
                     if chunk:
+                        guard.mark_payload()
                         if flow == "think":
                             yield ThinkDelta("\n")
                         flow = "speech"
                         yield TextDelta(chunk, channel)
+        except StreamStall as e:
+            _log.error("%s (model=%s)", e, self.cfg.model)
+            yield Notice("stall", f"⚠ {e}")
+            raise RuntimeError(str(e)) from None
 
     # ---- native function-calling agent loop ---------------------------------------
 
@@ -319,6 +417,11 @@ class LLMClient:
         "break the work into several smaller tool calls (e.g. write the file in pieces).]"
     )
     INTERRUPT_MARK = "\n[cut off mid-reply by the operator's next message]"
+    # Empty-completion policy (audit #4, hermes conversation_loop ≤3 retries):
+    # a stream that ends with no text and no tool calls is an invisible
+    # non-answer; silently recording assistant {content: None} violates the
+    # "visible errors, no fabricated output" principle by the back door.
+    _EMPTY_RETRY_LIMIT = 3
 
     def stream_agent(
         self, user_text, context, stable, volatile, tools, execute,
@@ -350,8 +453,10 @@ class LLMClient:
         volatile_messages = self._system_messages(volatile)
         acc: list[str] = []  # text of the in-flight turn, readable by `finally`
         finished = False
+        empty_retries = 0
         try:
-            for step in range(max_steps):
+            step = 0
+            while step < max_steps:
                 acc.clear()
                 t0 = time.monotonic()
                 tool_calls, thinking_text, finish = yield from self._stream_turn(
@@ -367,6 +472,27 @@ class LLMClient:
                 )
                 if truncated:
                     _log.warning("response truncated by output limit (finish=length, tools=%d)", len(tool_calls))
+
+                if not text and not tool_calls and not truncated:
+                    # An empty completion: nothing said, nothing called. Retry
+                    # within a small budget (doesn't consume tool-loop steps);
+                    # then surface a VISIBLE error — never a silent empty turn.
+                    reasoning_only = bool(thinking_text)
+                    what = (
+                        "reasoning-only completion (thinking exhausted before a visible reply)"
+                        if reasoning_only else
+                        f"empty stream (no content, no tool calls, finish={finish or 'missing'})"
+                    )
+                    empty_retries += 1
+                    if empty_retries <= self._EMPTY_RETRY_LIMIT:
+                        _log.warning("%s — retry %d/%d (model=%s)", what, empty_retries, self._EMPTY_RETRY_LIMIT, self.cfg.model)
+                        yield Notice("retry", f"⚠ {what} — retry {empty_retries}/{self._EMPTY_RETRY_LIMIT}")
+                        continue
+                    finished = True  # there is no partial to commit; the error IS the outcome
+                    _log.error("%s after %d retries (model=%s)", what, self._EMPTY_RETRY_LIMIT, self.cfg.model)
+                    raise RuntimeError(f"model returned a {what} after {self._EMPTY_RETRY_LIMIT} retries")
+                empty_retries = 0
+                step += 1
 
                 # DeepSeek thinking mode requires reasoning_content echoed on
                 # replayed assistant tool-call messages; everyone else gets it
@@ -461,8 +587,10 @@ class LLMClient:
         finish_reason = ""
         flow = ""  # "" | "think" | "speech" — for newline transitions around thinking
         resp = yield from self._connect_with_retry(f"{self.cfg.base_url}/chat/completions", data, timeout=120)
-        with resp:
-                for raw in resp:
+        guard = _StallGuard(resp, stall_timeout=_stall_timeout_for(len(data)))
+        try:
+            with resp:
+                for raw in guard.lines():
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
@@ -477,12 +605,14 @@ class LLMClient:
                     choice = payload.get("choices", [{}])[0]
                     if choice.get("finish_reason"):
                         finish_reason = str(choice["finish_reason"])
+                        guard.mark_payload()
                     delta = choice.get("delta", {})
                     # Reasoning-model thinking (DeepSeek-style `reasoning_content`,
                     # OpenRouter's `reasoning`): captured for the record, not shown
                     # as character speech and never replayed to the API.
                     thinking = delta.get("reasoning_content") or delta.get("reasoning")
                     if thinking:
+                        guard.mark_payload()
                         reasoning_parts.append(thinking)
                         # ThinkDelta: hidden by default behind the "✶ thinking…"
                         # indicator; /thinking on reveals it dimmed. The flow
@@ -495,12 +625,14 @@ class LLMClient:
                         yield ThinkDelta(thinking)
                     chunk = delta.get("content")
                     if chunk:
+                        guard.mark_payload()
                         if flow == "think":
                             yield ThinkDelta("\n")
                         flow = "speech"
                         text_out.append(chunk)
                         yield TextDelta(chunk, channel)
                     for tcd in delta.get("tool_calls") or []:
+                        guard.mark_payload()
                         idx = tcd.get("index", 0)
                         slot = acc.setdefault(idx, {"id": "", "name": "", "args": ""})
                         if tcd.get("id"):
@@ -510,6 +642,10 @@ class LLMClient:
                             slot["name"] = fn["name"]
                         if fn.get("arguments"):
                             slot["args"] += fn["arguments"]
+        except StreamStall as e:
+            _log.error("%s (model=%s)", e, self.cfg.model)
+            yield Notice("stall", f"⚠ {e}")
+            raise RuntimeError(str(e)) from None
         tool_calls: list[dict[str, Any]] = []
         for idx in sorted(acc):
             s = acc[idx]

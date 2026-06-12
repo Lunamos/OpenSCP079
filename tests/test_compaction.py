@@ -1,3 +1,5 @@
+import pytest
+
 from lunamoth.core import compaction
 from lunamoth.core.context import ContextBuffer
 
@@ -84,3 +86,81 @@ def test_offline_and_empty_summary_are_noops():
     assert _cp(ctx, 4000, FakeLLM(live=False)) is False
     assert _cp(ctx, 4000, FakeLLM(summary='')) is False
     assert len(ctx.messages) == n  # unchanged
+
+
+# ---- anti-thrash guard + failure cooldown (audit #10) -----------------------------------
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    t = {"now": 1000.0}
+    monkeypatch.setattr(compaction, "_now", lambda: t["now"])
+    return t
+
+
+def test_summarizer_failure_enters_cooldown_then_recovers(clock):
+    ctx = ContextBuffer(max_tokens=10_000_000)
+    _fill(ctx, 40, 500)
+    llm = FakeLLM(summary="")  # the summary call fails (raw_complete degrades to "")
+    assert _cp(ctx, 4000, llm) is False
+    assert llm.calls == 1
+    # Cooldown: over threshold, but no retry — not one wasted LLM call per turn.
+    assert _sc(ctx, 4000, llm) is False
+    assert _cp(ctx, 4000, llm) is False
+    assert llm.calls == 1
+    clock["now"] += 301  # cooldown expires
+    assert _sc(ctx, 4000, llm) is True
+    assert _cp(ctx, 4000, llm) is False  # tries again (and fails again)
+    assert llm.calls == 2
+
+
+def test_force_bypasses_the_failure_cooldown(clock):
+    ctx = ContextBuffer(max_tokens=10_000_000)
+    _fill(ctx, 40, 500)
+    llm = FakeLLM(summary="")
+    assert _cp(ctx, 4000, llm) is False  # enters cooldown
+    ctx.max_tokens, ctx.trim_buffer_tokens = 4000, 0
+    assert compaction.compact(ctx, "en", llm, force=True) is False  # but it TRIED
+    assert llm.calls == 2  # the operator's explicit /compact is never silently ignored
+
+
+def test_ineffective_compactions_back_off_until_window_regrows(clock):
+    ctx = ContextBuffer(max_tokens=10_000_000)
+    _fill(ctx, 40, 500)
+    # A summary nearly as fat as the head it replaces: shrink < 10%.
+    llm = FakeLLM(summary="y" * 12000)
+    assert _cp(ctx, 4000, llm) is True   # ineffective pass #1 (fat summary)
+    assert _cp(ctx, 4000, llm) is False  # nothing foldable left — ineffective #2
+    assert llm.calls == 1
+    # Two consecutive ineffective passes — the guard disengages compaction.
+    assert _sc(ctx, 4000, llm) is False
+    assert _cp(ctx, 4000, llm) is False
+    assert llm.calls == 1  # no more wasted summary calls
+    # The window genuinely regrows past the step — the guard re-arms.
+    ctx.max_tokens = 10_000_000  # let it grow (trim would cap it at the window)
+    _fill(ctx, 20, 2000)
+    assert _sc(ctx, 4000, llm) is True
+
+
+def test_nothing_to_fold_counts_as_ineffective(clock):
+    # Over threshold but the whole transcript fits in the protected tail
+    # (hermes scar #40803): without counting it, every turn re-fires a no-op.
+    ctx = ContextBuffer(max_tokens=10_000_000)
+    _fill(ctx, 6, 500)  # ~750 tokens: over a 1000-token budget's threshold, under the 2000 tail
+    llm = FakeLLM()
+    assert _cp(ctx, 1000, llm) is False
+    assert _cp(ctx, 1000, llm) is False
+    assert llm.calls == 0
+    assert _sc(ctx, 1000, llm) is False  # guard engaged after two no-ops
+
+
+def test_effective_compaction_resets_the_guard(clock):
+    ctx = ContextBuffer(max_tokens=10_000_000)
+    _fill(ctx, 40, 500)
+    llm = FakeLLM(summary="")
+    assert _cp(ctx, 4000, llm) is False  # failure -> cooldown
+    clock["now"] += 301
+    good = FakeLLM(summary="tight summary")
+    assert _cp(ctx, 4000, good) is True  # effective: big shrink
+    guard = compaction._guard(ctx)
+    assert guard.ineffective == 0 and guard.cooldown_until == 0.0  # both reset on success

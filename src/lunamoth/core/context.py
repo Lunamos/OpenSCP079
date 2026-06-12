@@ -143,9 +143,19 @@ class ContextBuffer:
     def trim(self) -> None:
         target = max(0, self.max_tokens - self.trim_buffer_tokens)
         while self.messages and self.token_count() > target:
-            dropped = self.messages.pop(0)
+            # After compaction messages[0] IS the kind="summary" row holding the
+            # entire compressed past — trimming it would delete everything old
+            # in one pop. Start at the first non-summary message; if only the
+            # summary remains it stays even over budget (it is the past, and
+            # the tail must shrink around it).
+            start = 0
+            while start < len(self.messages) and self.messages[start].get("kind") == "summary":
+                start += 1
+            if start >= len(self.messages):
+                break
+            dropped = self.messages.pop(start)
             # Never strand tool results without the assistant call that made
             # them — the API rejects orphaned role:"tool" messages.
             if dropped.get("tool_calls"):
-                while self.messages and self.messages[0].get("tool_call_id"):
-                    self.messages.pop(0)
+                while start < len(self.messages) and self.messages[start].get("tool_call_id"):
+                    self.messages.pop(start)

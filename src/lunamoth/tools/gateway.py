@@ -93,6 +93,13 @@ class ToolGateway:
             result = {"ok": False, "error": f"{name} called with wrong arguments ({e}). Parameters are: {props}."}
         except (SandboxViolation, FileNotFoundError, ValueError, PermissionError) as e:
             result = {"ok": False, "error": str(e)}
+        except Exception as e:
+            # Final boundary: a crashing tool (OSError, BrokenPipeError, KeyError,
+            # anything) must become an error RESULT the model can react to —
+            # never a raw traceback that aborts the whole streaming turn.
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            self.audit.write("tool_crash", tool=name, args=self._safe_args(kwargs), result=result)
+            _log.exception("tool %s crashed", name)
         self.audit.write("tool_call", tool=name, args=self._safe_args(kwargs), result=result)
         if result["ok"]:
             _log.debug("%s ok in %.2fs", name, time.monotonic() - t0)
@@ -112,6 +119,12 @@ class ToolGateway:
         except McpError as e:
             result = {"ok": False, "error": str(e)}
             _log.warning("%s failed: %s", name, e)
+        except Exception as e:
+            # Same boundary as call(): e.g. a dead server's pipe raising
+            # BrokenPipeError must feed an error to the model, not kill the turn.
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            self.audit.write("tool_crash", tool=name, args=self._safe_args(kwargs), result=result)
+            _log.exception("tool %s crashed", name)
         self.audit.write("tool_call", tool=name, args=self._safe_args(kwargs), result=result)
         return result
 

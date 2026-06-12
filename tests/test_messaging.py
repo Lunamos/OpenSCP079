@@ -173,6 +173,83 @@ def test_gateway_unknown_sender_refused_once_without_model_call():
     assert "configured contacts" in adapter.sent[0]
 
 
+class FlakyAdapter(FakeAdapter):
+    """send() raises `failures` times, then succeeds."""
+
+    def __init__(self, failures, exc=None):
+        super().__init__("flaky")
+        self.failures = failures
+        self.exc = exc or ConnectionResetError("socket dropped")
+        self.attempts = 0
+
+    def send(self, text: str):
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise self.exc
+        self.sent.append(text)
+
+
+@pytest.fixture
+def fast_send_retry(monkeypatch):
+    import logging
+
+    import lunamoth.messaging.gateway as gw_mod
+
+    monkeypatch.setattr(gw_mod, "_SEND_RETRY_DELAY", 0.01)
+    # obs.setup_logging (run by sibling tests) cuts propagation on "lunamoth";
+    # restore it so caplog can see gateway records regardless of test order.
+    monkeypatch.setattr(logging.getLogger("lunamoth"), "propagate", True)
+
+
+def test_send_failure_retries_once_then_delivers(fast_send_retry):
+    handle = FakeHandle()
+    adapter = FlakyAdapter(failures=1)
+    gateway = MessagingGateway(handle=handle, adapters=[adapter], allowed_senders=["u1"], patience=999)
+
+    gateway.enqueue(adapter, InboundMessage("u1", "Alice", "hi"))
+    assert gateway.tick(timeout=0)
+
+    assert adapter.attempts == 2
+    assert adapter.sent == ["reply"]  # delivered on the bounded retry
+
+
+def test_send_failure_drops_that_message_and_gateway_lives(fast_send_retry, caplog):
+    # The audit-#31 crash: a non-DeliveryDeferred exception from send()
+    # propagated through tick()/run() and killed the gateway process. Now the
+    # message is dropped with an ERROR log and the NEXT message still flows.
+    import logging
+
+    handle = FakeHandle()
+    adapter = FlakyAdapter(failures=2)  # both attempts fail
+    gateway = MessagingGateway(handle=handle, adapters=[adapter], allowed_senders=["u1"], patience=999)
+
+    gateway.enqueue(adapter, InboundMessage("u1", "Alice", "hi"))
+    with caplog.at_level(logging.ERROR, logger="lunamoth.messaging.gateway"):
+        assert gateway.tick(timeout=0)  # does NOT raise
+    assert adapter.sent == []
+    assert any("dropped a message" in m for m in caplog.messages)
+
+    gateway.enqueue(adapter, InboundMessage("u1", "Alice", "again"))
+    assert gateway.tick(timeout=0)
+    assert adapter.sent == ["reply"]  # the inbox survived the bad send
+
+
+def test_delivery_deferred_is_logged_not_retried(fast_send_retry, caplog):
+    import logging
+
+    from lunamoth.messaging.base import DeliveryDeferred
+
+    handle = FakeHandle()
+    adapter = FlakyAdapter(failures=99, exc=DeliveryDeferred("no reply window"))
+    gateway = MessagingGateway(handle=handle, adapters=[adapter], allowed_senders=["u1"], patience=999)
+
+    gateway.enqueue(adapter, InboundMessage("u1", "Alice", "hi"))
+    with caplog.at_level(logging.ERROR, logger="lunamoth.messaging.gateway"):
+        assert gateway.tick(timeout=0)
+    assert adapter.attempts == 1  # a conscious deferral is not retried
+    assert any("could not deliver" in m for m in caplog.messages)
+
+
 def test_wecom_official_sample_signature_and_url_decrypt():
     pytest.importorskip("cryptography")
     # Tencent's WXBizMsgCrypt samples: the POST example documents the first

@@ -25,10 +25,12 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import subprocess
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from ..config import ROOT
 from ..obs import get_logger
@@ -37,7 +39,12 @@ _log = get_logger("mcp")
 
 _PROTOCOL_VERSION = "2025-03-26"
 _SAFE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "USER", "SHELL")
-_RPC_TIMEOUT = 30.0
+# Real timeouts (hermes mcp_tool.py: per-call 120 s, connect 60 s). A hung MCP
+# server must never wedge the turn: on timeout the server is killed, reaped,
+# and marked dead so later calls fail fast instead of hanging again.
+_CONNECT_TIMEOUT = 60.0   # initialize handshake + tools/list
+_CALL_TIMEOUT = 120.0     # one tools/call
+_REAP_WAIT = 5.0          # grace for terminate() before kill()
 _RESULT_CAP = 8000
 
 
@@ -79,10 +86,17 @@ class _Client:
         self.lock = threading.Lock()
         self._id = 0
         self._tools: list[dict[str, Any]] | None = None
+        # Set once a timeout killed the server: a hung server that wedged one
+        # call must not be restarted to hang the next one — later calls fail
+        # fast with a visible error until the operator reconfigures/restarts.
+        self.dead: str | None = None
+        self._rx: "queue.Queue[str | None]" = queue.Queue()
 
     # -- transport --------------------------------------------------------------------
 
     def _ensure_started(self) -> None:
+        if self.dead:
+            raise McpError(f"mcp server {self.name!r} is disabled ({self.dead})")
         if self.proc is not None and self.proc.poll() is None:
             return
         command = self.config.get("command")
@@ -101,31 +115,63 @@ class _Client:
             raise McpError(f"mcp server {self.name!r} failed to start: {e}") from e
         _log.info("server %r %s (pid %d)", self.name, "restarted" if restarted else "started", self.proc.pid)
         self._tools = None
+        # Dedicated reader thread per spawn: stdout lines flow into a queue so
+        # _rpc can wait with a DEADLINE instead of blocking forever on a hung
+        # server (the unbounded `for line in stdout` was the wedge).
+        self._rx = queue.Queue()
+        threading.Thread(
+            target=self._read_loop, args=(self.proc, self._rx),
+            name=f"lunamoth-mcp-{self.name}-reader", daemon=True,
+        ).start()
         self._rpc("initialize", {
             "protocolVersion": _PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {"name": "lunamoth", "version": "0.1"},
-        })
+        }, timeout=_CONNECT_TIMEOUT)
         self._notify("notifications/initialized")
+
+    @staticmethod
+    def _read_loop(proc: subprocess.Popen, rx: "queue.Queue[str | None]") -> None:
+        try:
+            assert proc.stdout
+            for line in proc.stdout:
+                rx.put(line)
+        except (OSError, ValueError):
+            pass
+        rx.put(None)  # EOF sentinel: the server closed its stdout
 
     def _send(self, payload: dict[str, Any]) -> None:
         assert self.proc and self.proc.stdin
-        self.proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError) as e:  # BrokenPipeError, closed file
+            raise McpError(f"mcp server {self.name!r} is not accepting input ({e})") from e
 
     def _notify(self, method: str) -> None:
         self._send({"jsonrpc": "2.0", "method": method})
 
-    def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        assert self.proc and self.proc.stdout
+    def _rpc(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
+        assert self.proc
         self._id += 1
         rid = self._id
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         # Read until OUR response; ignore server notifications/other traffic.
-        # (No select-timeout dance: a hung server is killed by the caller's
-        # patience — honest failure, like every other request we make.)
-        for line in self.proc.stdout:
-            line = line.strip()
+        # Bounded by `timeout`: on expiry the server is killed and marked dead
+        # — a visible error, never a wedged turn.
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._timeout_kill(method, timeout)
+            try:
+                raw = self._rx.get(timeout=remaining)
+            except queue.Empty:
+                self._timeout_kill(method, timeout)
+            if raw is None:
+                _log.error("server %r closed the stream during %s (crashed?)", self.name, method)
+                raise McpError(f"mcp server {self.name!r} closed the stream (crashed?)")
+            line = raw.strip()
             if not line:
                 continue
             try:
@@ -139,16 +185,36 @@ class _Client:
                 _log.warning("server %r returned an error for %s: %s", self.name, method, err)
                 raise McpError(f"mcp {self.name}: {err.get('message', err)}")
             return msg.get("result", {})
-        _log.error("server %r closed the stream during %s (crashed?)", self.name, method)
-        raise McpError(f"mcp server {self.name!r} closed the stream (crashed?)")
 
-    def close(self) -> None:
-        if self.proc and self.proc.poll() is None:
+    def _timeout_kill(self, method: str, timeout: float) -> NoReturn:
+        self.dead = f"timed out after {timeout:.0f}s during {method}; killed"
+        _log.error("server %r %s — it stays disabled until reconfigure/restart", self.name, self.dead)
+        self._reap()
+        raise McpError(f"mcp server {self.name!r} {self.dead}. It is disabled until the session is reconfigured.")
+
+    def _reap(self) -> None:
+        """Terminate AND wait — terminate-and-drop leaves zombies (audit #21)."""
+        proc, self.proc = self.proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=_REAP_WAIT)
+        except subprocess.TimeoutExpired:
             try:
-                self.proc.terminate()
+                proc.kill()
             except OSError:
                 pass
-        self.proc = None
+            try:
+                proc.wait(timeout=_REAP_WAIT)
+            except subprocess.TimeoutExpired:
+                _log.error("server %r did not die after SIGKILL (pid %d)", self.name, proc.pid)
+
+    def close(self) -> None:
+        self._reap()
 
     # -- MCP operations ---------------------------------------------------------------
 
@@ -156,14 +222,14 @@ class _Client:
         with self.lock:
             self._ensure_started()
             if self._tools is None:
-                result = self._rpc("tools/list", {})
+                result = self._rpc("tools/list", {}, timeout=_CONNECT_TIMEOUT)
                 self._tools = [t for t in result.get("tools", []) if t.get("name")]
             return self._tools
 
     def call_tool(self, tool: str, arguments: dict[str, Any]) -> str:
         with self.lock:
             self._ensure_started()
-            result = self._rpc("tools/call", {"name": tool, "arguments": arguments})
+            result = self._rpc("tools/call", {"name": tool, "arguments": arguments}, timeout=_CALL_TIMEOUT)
         parts = []
         for block in result.get("content", []):
             if block.get("type") == "text":

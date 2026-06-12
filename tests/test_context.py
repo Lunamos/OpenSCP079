@@ -52,6 +52,44 @@ def test_trim_never_strands_tool_results():
     assert all(not m.get("tool_call_id") for m in c.messages)
 
 
+def test_trim_protects_the_summary_head():
+    # After compaction, messages[0] is the kind="summary" row holding the
+    # entire compressed past — the backstop trim must eat chatter, never it.
+    c = ContextBuffer(max_tokens=100, trim_buffer_tokens=0)
+    summary = {"role": "system", "content": "s" * 200, "kind": "summary"}
+    c.messages = [summary] + [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"chatter {i} " + "y" * 80}
+        for i in range(10)
+    ]
+    c.trim()
+    assert c.messages[0] is summary  # the past survives
+    assert len(c.messages) < 11      # chatter was trimmed instead
+
+
+def test_oversized_summary_alone_survives_trim():
+    # A summary fatter than the whole budget is kept anyway — it IS the past;
+    # the tail shrinks to nothing around it rather than the summary vanishing.
+    c = ContextBuffer(max_tokens=50, trim_buffer_tokens=0)
+    summary = {"role": "system", "content": "s" * 2000, "kind": "summary"}
+    c.messages = [summary, {"role": "user", "content": "hi"}]
+    c.trim()
+    assert c.messages == [summary]
+
+
+def test_trim_after_summary_never_strands_tool_results():
+    # The orphan-drop rule must keep working when trim starts past the summary.
+    c = ContextBuffer(max_tokens=10, trim_buffer_tokens=0)
+    c.messages = [
+        {"role": "system", "content": "old facts", "kind": "summary"},
+        {"role": "assistant", "content": "x" * 100, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        {"role": "assistant", "content": "z" * 100},
+    ]
+    c.trim()
+    assert c.messages[0].get("kind") == "summary"
+    assert all(not m.get("tool_call_id") for m in c.messages)
+
+
 @pytest.fixture
 def agent(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")
