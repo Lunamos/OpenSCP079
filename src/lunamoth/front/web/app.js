@@ -36,6 +36,26 @@ function timeAgo(ts) {
   return `${Math.round(s / 86400)} ${t("ago-day")}`;
 }
 
+function estimateTokens(text) {
+  const s = String(text || "");
+  let cjk = 0;
+  for (const ch of s) if (ch >= "\u4e00" && ch <= "\u9fff") cjk++;
+  const other = Math.max(0, s.length - cjk);
+  return cjk + Math.floor(other / 4);
+}
+
+function durationText(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  if (s >= 60) return `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
+  if (s >= 10) return `${Math.round(s)}s`;
+  if (s >= 1) return `${s.toFixed(1)}s`;
+  return "<1s";
+}
+
+function modeLabel(mode) {
+  return t(mode === "chat" ? "mode-chat" : "mode-live");
+}
+
 /* minimal markdown for character prose: fences, inline code, bold, italic.
    Streaming shows raw text; blocks are formatted when the turn finalizes. */
 function mdRender(text) {
@@ -200,6 +220,34 @@ function isoGlyph(iso) {
   return { dir: t("iso-dir"), sandbox: t("iso-sandbox"), docker: t("iso-docker") }[iso] || iso;
 }
 
+function superBadge(cls) {
+  return el("span", { class: "super-badge" + (cls ? " " + cls : ""), title: t("superchat-tip") }, "⚡ Super Chat");
+}
+
+function parseToolArguments(raw) {
+  if (raw && typeof raw === "object") return raw;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function speakTextsFromMessage(msg) {
+  const out = [];
+  const calls = Array.isArray(msg && msg.tool_calls) ? msg.tool_calls : [];
+  for (const tc of calls) {
+    const fn = tc && tc.function;
+    if (!fn || fn.name !== "speak") continue;
+    const args = parseToolArguments(fn.arguments);
+    const text = args && typeof args.text === "string" ? args.text.trim() : "";
+    if (text) out.push(text);
+  }
+  return out;
+}
+
 function renderBoard() {
   if (!state.hub) return;
   const list = sessionsSorted();
@@ -231,7 +279,8 @@ function renderBoard() {
         el("div", { class: "card-name" },
           el("b", null, s.char_name),
           el("div", { class: "chips" },
-            el("span", { class: "chip" }, s.lang))),
+            el("span", { class: "chip" }, s.lang),
+            el("span", { class: "chip" }, modeLabel(s.mode)))),
         (() => {
           const line = el("div", { class: "status-line " + st.cls }, st.line);
           if (st.cls === "err") {
@@ -245,6 +294,14 @@ function renderBoard() {
             }, t("go-settings")));
           }
           return line;
+        })(),
+        (() => {
+          const speaks = Array.isArray(s.speaks) ? s.speaks : [];
+          if (!speaks.length) return null;
+          return el("div", { class: "speak-feed" },
+            ...speaks.slice(0, 3).map((sp) => el("div", { class: "speak-item" },
+              el("div", { class: "speak-top" }, superBadge("mini"), el("time", null, timeAgo(sp.ts))),
+              el("div", { class: "speak-text" }, sp.text || ""))));
         })(),
         el("div", { class: "meta-line" },
           el("span", null, s.model || ""),
@@ -831,12 +888,19 @@ class ChatController {
     this.showThinking = false;
     this.disposed = false;
     this.cur = { kind: null, node: null, textNode: null };
-    this.toolSteps = [];
-    this.workingLine = null;
-    this.thinkingLine = null;
+    this.toolChips = null;
+    this.activeTools = new Map();
+    this.pendingSuper = false;
+    this.turnThink = null;
+    this.work = { active: false, phase: "idle", thinkTokens: 0, toolName: "" };
     this.idleTimer = null;
     this.snapTimer = null;
     this.drawerLoaded = {};
+    try {
+      this.thinkExpanded = localStorage.getItem("lm-chat-thinking-expanded") === "1";
+    } catch (e) {
+      this.thinkExpanded = false;
+    }
     const entry = (state.hub && state.hub.sessions.find((s) => s.name === name)) || null;
     if (entry) this.charName = entry.char_name;
   }
@@ -844,6 +908,7 @@ class ChatController {
   /* ---- lifecycle ---- */
   async open() {
     $("stream-inner").innerHTML = "";
+    this.setWorkState(false);
     $("chat-name").textContent = this.charName;
     $("chat-statusword").textContent = t("st-connecting");
     $("chat-avatar").className = "avatar-s " + paletteClass(this.charName);
@@ -913,13 +978,31 @@ class ChatController {
   /* ---- restored history ---- */
   renderRestored(messages) {
     const inner = $("stream-inner");
-    for (const m of messages.slice(-60)) {
-      if (!m || typeof m.content !== "string" || !m.content.trim()) continue;
+    for (const m of messages.slice(-80)) {
+      if (!m) continue;
+      const content = typeof m.content === "string" ? m.content : "";
+      const hasText = content.trim().length > 0;
       if (m.role === "user") {
+        if (!hasText) continue;
         inner.appendChild(el("div", { class: "user-msg" }, el("div", { class: "bubble" }, m.content)));
+      } else if (m.role === "system") {
+        if (hasText && m.kind !== "summary") this.systemLine(content);
       } else if (m.role === "assistant") {
-        this.appendCharText(m.content);
-        this.finalize();
+        if (m.kind === "think") {
+          if (hasText) {
+            this.appendMuseText(content);
+            this.closeCurrent();
+          }
+          continue;
+        }
+        if (hasText) {
+          this.appendCharText(content);
+          this.closeCurrent();
+        }
+        for (const speak of speakTextsFromMessage(m)) {
+          this.appendCharText(speak, { superChat: true });
+          this.closeCurrent();
+        }
       }
     }
     this.scrollDown(true);
@@ -929,99 +1012,239 @@ class ChatController {
   onEvent(ev) {
     if (!ev || this.disposed) return;
     if (ev.type === "text") {
-      this.clearThinkingLine();
-      if (ev.channel === "muse") this.appendBlock("muse", ev.text);
-      else this.appendCharText(ev.text);
+      this.setWorkState(true, "generate");
+      const isSuper = ev.channel === "say" && this.pendingSuper;
+      if (ev.channel === "say") this.pendingSuper = false;
+      if (ev.channel === "muse") {
+        this.appendMuseText(ev.text);
+      } else {
+        this.appendCharText(ev.text, { superChat: isSuper });
+      }
       this.setStatusWord(t("st-creating"));
     } else if (ev.type === "think") {
-      if (this.showThinking) this.appendBlock("think", ev.text);
-      else this.showThinkingLine();
+      this.appendThinking(ev.text);
     } else if (ev.type === "tool_start") {
-      this.clearThinkingLine();
-      this.closeCurrent();
-      this.showWorking(ev.name, ev.preview || "");
+      this.showToolStart(ev);
     } else if (ev.type === "tool_end") {
-      this.toolSteps.push(ev);
-      this.clearWorking();
+      this.showToolEnd(ev);
     } else if (ev.type === "notice") {
       this.note(ev.text || ev.kind);
     }
     this.scrollDown();
   }
 
-  appendCharText(text) {
-    if (this.cur.kind !== "say") {
+  appendCharText(text, opts) {
+    const kind = opts && opts.superChat ? "super" : "say";
+    if (this.cur.kind !== kind) {
       this.closeCurrent();
+      this.breakToolGroup();
       const textDiv = el("div", { class: "text" });
-      const node = el("div", { class: "char-msg" },
+      const nameLine = el("div", { class: "name" }, this.charName);
+      if (kind === "super") nameLine.appendChild(superBadge());
+      const node = el("div", { class: "char-msg" + (kind === "super" ? " super-chat" : "") },
         el("div", { class: "avatar-s " + paletteClass(this.charName), style: "font-size:12px" }, glyphOf(this.charName)),
         el("div", { class: "body" },
-          el("div", { class: "name" }, this.charName),
+          nameLine,
           textDiv));
       $("stream-inner").appendChild(node);
-      this.cur = { kind: "say", node, textNode: textDiv, raw: "" };
+      this.cur = { kind, node, textNode: textDiv, raw: "" };
     }
     this.cur.raw = (this.cur.raw || "") + text;
     this.cur.textNode.textContent = this.cur.raw;
   }
 
-  appendBlock(kind, text) {
-    if (this.cur.kind !== kind) {
+  appendMuseText(text) {
+    if (this.cur.kind !== "muse") {
       this.closeCurrent();
-      const node = el("div", { class: kind });
+      this.breakToolGroup();
+      const textDiv = el("div", { class: "muse-text" });
+      const node = el("div", { class: "muse-msg" },
+        el("div", { class: "muse-label" }, t("muse-label")),
+        textDiv);
       $("stream-inner").appendChild(node);
-      this.cur = { kind, node, textNode: node };
+      this.cur = { kind: "muse", node, textNode: textDiv, raw: "" };
     }
-    this.cur.textNode.textContent += text;
+    this.cur.raw = (this.cur.raw || "") + text;
+    this.cur.textNode.textContent = this.cur.raw;
+  }
+
+  appendThinking(text) {
+    if (this.cur.kind !== "think") {
+      this.closeCurrent();
+      this.breakToolGroup();
+      if (this.turnThink && this.turnThink.node && this.turnThink.node.isConnected) {
+        this.cur = this.turnThink;
+      } else {
+        const head = el("button", { class: "think-head streaming" });
+        const body = el("div", { class: "think-body" });
+        const node = el("div", { class: "think-block streaming" }, head, body);
+        head.onclick = () => this.toggleThinkingExpanded();
+        $("stream-inner").appendChild(node);
+        this.cur = { kind: "think", node, head, body, raw: "", tokens: 0 };
+        this.turnThink = this.cur;
+      }
+    }
+    this.cur.raw = (this.cur.raw || "") + text;
+    this.cur.tokens = this.cur.raw ? Math.max(1, estimateTokens(this.cur.raw)) : 0;
+    this.cur.node.dataset.tokens = String(this.cur.tokens);
+    this.cur.body.textContent = this.cur.raw;
+    this.applyThinkState(this.cur.node, true);
+    this.setWorkState(true, "think", { thinkTokens: this.cur.tokens });
   }
 
   closeCurrent() {
-    if (this.cur.kind === "say" && this.cur.raw) this.cur.textNode.innerHTML = mdRender(this.cur.raw);
+    if ((this.cur.kind === "say" || this.cur.kind === "super") && this.cur.raw) {
+      this.cur.textNode.innerHTML = mdRender(this.cur.raw);
+    }
     this.cur = { kind: null, node: null, textNode: null };
   }
 
-  showWorking(name, preview) {
-    this.clearWorking();
-    this.workingLine = el("div", { class: "working-now" },
-      el("i"), el("span", null, `⚙ ${name}`), preview ? el("code", null, preview) : null);
-    $("stream-inner").appendChild(this.workingLine);
+  applyThinkState(node, streaming) {
+    if (!node) return;
+    const tokens = Number(node.dataset.tokens || 0) || 0;
+    const head = node.querySelector(".think-head");
+    const body = node.querySelector(".think-body");
+    node.classList.toggle("streaming", !!streaming);
+    if (head) {
+      head.classList.toggle("streaming", !!streaming);
+      head.textContent = streaming
+        ? `✶ ${t("thinking-live", { n: tokens })}`
+        : `${t("thinking-done", { n: tokens })} ${this.thinkExpanded ? "▾" : "▸"}`;
+    }
+    if (body) body.style.display = this.thinkExpanded ? "block" : "none";
   }
-  clearWorking() { if (this.workingLine) { this.workingLine.remove(); this.workingLine = null; } }
 
-  showThinkingLine() {
-    if (this.thinkingLine) return;
-    this.thinkingLine = el("div", { class: "muse" }, t("thinking"));
-    $("stream-inner").appendChild(this.thinkingLine);
+  toggleThinkingExpanded() {
+    this.thinkExpanded = !this.thinkExpanded;
+    try { localStorage.setItem("lm-chat-thinking-expanded", this.thinkExpanded ? "1" : "0"); } catch (e) { /* ok */ }
+    this.updateThinkingBlocks();
   }
-  clearThinkingLine() { if (this.thinkingLine) { this.thinkingLine.remove(); this.thinkingLine = null; } }
+
+  updateThinkingBlocks() {
+    $("stream-inner").querySelectorAll(".think-block").forEach((node) =>
+      this.applyThinkState(node, node.classList.contains("streaming")));
+  }
+
+  finalizeThinkingBlocks() {
+    $("stream-inner").querySelectorAll(".think-block.streaming").forEach((node) => {
+      node.classList.remove("streaming");
+      this.applyThinkState(node, false);
+    });
+  }
+
+  ensureToolGroup() {
+    if (this.toolChips && this.toolChips.isConnected) return this.toolChips;
+    this.closeCurrent();
+    const node = el("div", { class: "tool-chip-line" });
+    $("stream-inner").appendChild(node);
+    this.toolChips = node;
+    return node;
+  }
+
+  breakToolGroup() {
+    this.toolChips = null;
+  }
+
+  toolKey(ev) {
+    return `${Number(ev.index || 0)}:${ev.name || "?"}`;
+  }
+
+  showToolStart(ev) {
+    this.closeCurrent();
+    const name = ev.name || "?";
+    const group = this.ensureToolGroup();
+    const detail = el("div", { class: "tool-detail" }, ev.preview || "");
+    const button = el("button", { class: "tool-chip running" },
+      el("span", { class: "spin" }), el("span", null, `⚙ ${name}`));
+    const item = el("div", { class: "tool-chip-item" }, button, detail);
+    button.onclick = () => item.classList.toggle("open");
+    group.appendChild(item);
+    this.activeTools.set(this.toolKey(ev), { item, button, detail, name });
+    this.setWorkState(true, "tool", { toolName: name });
+    this.setStatusWord(t("st-creating"));
+  }
+
+  showToolEnd(ev) {
+    const name = ev.name || "?";
+    const key = this.toolKey(ev);
+    let rec = this.activeTools.get(key);
+    if (!rec) {
+      const group = this.ensureToolGroup();
+      const detail = el("div", { class: "tool-detail" });
+      const button = el("button", { class: "tool-chip" });
+      const item = el("div", { class: "tool-chip-item" }, button, detail);
+      button.onclick = () => item.classList.toggle("open");
+      group.appendChild(item);
+      rec = { item, button, detail, name };
+    }
+    const ok = ev.ok !== false;
+    rec.button.className = "tool-chip " + (ok ? "ok" : "err");
+    rec.button.textContent = `⚙ ${name} ${ok ? "✓" : "✗"} · ${durationText(ev.duration)}`;
+    rec.detail.textContent = ev.summary || t("tool-no-summary");
+    rec.item.classList.toggle("has-detail", !!(ev.summary || "").trim());
+    this.activeTools.delete(key);
+    if (name === "speak" && ok) this.pendingSuper = true;
+    if (this.activeTools.size) {
+      const next = this.activeTools.values().next().value;
+      this.setWorkState(true, "tool", { toolName: next ? next.name : "" });
+    } else {
+      this.setWorkState(true, "generate");
+    }
+  }
+
+  systemLine(text, cls) {
+    if (!text) return;
+    this.closeCurrent();
+    this.breakToolGroup();
+    $("stream-inner").appendChild(el("div", { class: "sys-note" + (cls ? " " + cls : "") }, String(text).slice(0, 240)));
+  }
+
+  idleDivider() {
+    this.systemLine(t("idle-divider"), "idle-divider");
+  }
+
+  setWorkState(active, phase, detail) {
+    const node = $("work-status");
+    if (!node) return;
+    if (!active) {
+      this.work = { active: false, phase: "idle", thinkTokens: 0, toolName: "" };
+      node.hidden = true;
+      node.textContent = "";
+      node.className = "work-status";
+      return;
+    }
+    this.work = {
+      active: true,
+      phase: phase || this.work.phase || "generate",
+      thinkTokens: detail && "thinkTokens" in detail ? detail.thinkTokens : (this.work.thinkTokens || 0),
+      toolName: detail && "toolName" in detail ? detail.toolName : (this.work.toolName || ""),
+    };
+    node.hidden = false;
+    node.className = "work-status " + this.work.phase;
+    if (this.work.phase === "think") {
+      node.textContent = t("work-thinking", { n: this.work.thinkTokens || 0 });
+    } else if (this.work.phase === "tool") {
+      node.textContent = t("work-tool", { name: this.work.toolName || "tool" });
+    } else {
+      node.textContent = t("work-generating");
+    }
+  }
 
   finalize() {
-    // end of one streamed turn: collapse tool steps into a quiet fold
-    this.clearWorking();
-    this.clearThinkingLine();
-    if (this.toolSteps.length) {
-      const steps = this.toolSteps;
-      this.toolSteps = [];
-      const total = steps.reduce((acc, s) => acc + (s.duration || 0), 0);
-      const dur = total >= 60 ? `${Math.floor(total / 60)}m${Math.round(total % 60)}s`
-        : total >= 1 ? `${Math.round(total)}s` : "<1s";
-      const stepsBox = el("div", { class: "tool-steps" },
-        ...steps.map((s) => el("div", null, el("b", null, (s.ok === false ? "✗ " : "") + s.name), el("span", null, s.summary || ""))));
-      const fold = el("button", { class: "tool-fold", onclick: () => stepsBox.classList.toggle("open") },
-        `⚙ ${t("worked-steps", { n: steps.length })} · ${dur} ›`);
-      $("stream-inner").appendChild(fold);
-      $("stream-inner").appendChild(stepsBox);
-    }
     this.closeCurrent();
+    this.finalizeThinkingBlocks();
+    this.activeTools.clear();
+    this.breakToolGroup();
+    this.pendingSuper = false;
+    this.turnThink = null;
+    this.setWorkState(false);
     this.setStatusWord(t("st-listening"));
     this.scrollDown();
   }
 
   note(text) {
     if (!text) return;
-    const prev = $("stream-inner").querySelector(".sys-note:last-child");
-    if (prev) prev.remove();
-    $("stream-inner").appendChild(el("div", { class: "sys-note" }, String(text).slice(0, 200)));
+    this.systemLine(text);
   }
 
   scrollDown(force) {
@@ -1035,6 +1258,8 @@ class ChatController {
   /* ---- driving turns ---- */
   async runStream(fn) {
     this.setSending(true);
+    this.turnThink = null;
+    this.setWorkState(true, "generate");
     try {
       await fn();
     } catch (e) {
@@ -1071,6 +1296,7 @@ class ChatController {
         this.scheduleIdle();
         return;
       }
+      this.idleDivider();
       await this.runStream(() => this.client.idle());
     }, 10000);
   }

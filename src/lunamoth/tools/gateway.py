@@ -428,10 +428,13 @@ class ToolGateway:
             },
             "speak": {
                 "description": (
-                    "Say something to your user, directly. While they are away or not watching, "
-                    "your ordinary output stays with you — only what you pass through this tool is "
-                    "DELIVERED to them (console highlight, message, notification — whatever frontend "
-                    "they use). What is worth their attention is yours to judge."
+                    "Say something to your user, directly — your super chat: the one channel "
+                    "that reaches them when they are not watching, delivered wherever they are "
+                    "(console, desktop notification, chat app). It is a bid for their attention: "
+                    "it arrives highlighted, and they may reply — when they do, you have their "
+                    "attention for a real conversation for a while. Everything else you write "
+                    "stays with you. What is worth their attention, and in what voice, is yours "
+                    "to judge; attention asked for too often stops being given."
                 ),
                 "parameters": {
                     "type": "object",

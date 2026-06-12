@@ -746,6 +746,70 @@ def _transcript_preview(meta: S.SessionMeta) -> dict[str, Any] | None:
     return {"role": role, "text": text[:160], "ts": ts, "awaiting": role == "assistant"}
 
 
+def _speak_texts_from_struct(content: str) -> list[str]:
+    try:
+        msg = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(msg, dict):
+        return []
+    out: list[str] = []
+    calls = msg.get("tool_calls")
+    if not isinstance(calls, list):
+        return out
+    for tc in calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != "speak":
+            continue
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            continue
+        if not isinstance(args, dict):
+            continue
+        raw_text = args.get("text")
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
+        if text:
+            out.append(" ".join(text.split())[:240])
+    return out
+
+
+def _transcript_speaks(meta: S.SessionMeta, limit: int = 3) -> list[dict[str, Any]]:
+    """Newest speak-tool utterances for the board Super Chat feed."""
+    db = meta.sandbox_dir / "transcript.db"
+    if not db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            rows = conn.execute(
+                "SELECT content, ts FROM messages "
+                "WHERE kind='struct' AND role='assistant' AND content LIKE '%speak%' "
+                "ORDER BY id DESC LIMIT 80"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    out: list[dict[str, Any]] = []
+    for content, ts in rows:
+        for text in reversed(_speak_texts_from_struct(str(content))):
+            out.append({"text": text, "ts": float(ts or 0.0)})
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def _last_error(meta: S.SessionMeta) -> str:
     """Most recent line of the chara's error log, if it is fresh (< 10 min)."""
     err = meta.sandbox_dir / "logs" / "errors.log"
@@ -801,6 +865,7 @@ def session_entry(meta: S.SessionMeta) -> dict[str, Any]:
         "created_at": meta.created_at,
         "last_active": meta.last_active or meta.created_at,
         "preview": _transcript_preview(meta),
+        "speaks": _transcript_speaks(meta),
         "error": last_error,
         "error_kind": board_error_kind(last_error),
     }

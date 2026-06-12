@@ -3,6 +3,7 @@
 Everything runs against a temp LUNAMOTH_HOME; no network, no LLM (provider
 HTTP paths are exercised separately / mocked here)."""
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -409,6 +410,103 @@ def test_session_entry_includes_auth_error_kind():
     row = result("sessions.list")[0]
     assert row["error_kind"] == "auth"
     assert "HTTP 401" in row["error"]
+
+
+def test_board_state_extracts_recent_speak_tool_calls_from_transcript():
+    set_defaults()
+    entry = result("session.wake", {"card": luna_card_path()})
+    meta = S.load_session(entry["name"])
+    db = meta.sandbox_dir / "transcript.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, epoch INTEGER NOT NULL DEFAULT 0, "
+            "role TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'chat', ts REAL NOT NULL)"
+        )
+        rows = [
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "speak", "arguments": json.dumps({"text": "old hello"})},
+                    }],
+                }),
+                "struct",
+                99.0,
+            ),
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "terminal", "arguments": json.dumps({"cmd": "echo ignored"})},
+                    }],
+                }),
+                "struct",
+                100.0,
+            ),
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "speak", "arguments": "{"},
+                    }],
+                }),
+                "struct",
+                101.0,
+            ),
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "speak", "arguments": json.dumps({"text": "first hello"})},
+                    }],
+                }),
+                "struct",
+                102.0,
+            ),
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": "memory", "arguments": json.dumps({"text": "ignored"})}},
+                        {"function": {"name": "speak", "arguments": json.dumps({"text": "second hello"})}},
+                    ],
+                }),
+                "struct",
+                103.0,
+            ),
+            (
+                "assistant",
+                json.dumps({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "speak", "arguments": json.dumps({"text": "newest hello"})},
+                    }],
+                }),
+                "struct",
+                104.0,
+            ),
+        ]
+        conn.executemany("INSERT INTO messages(role, content, kind, ts) VALUES(?,?,?,?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+
+    row = result("sessions.list")[0]
+
+    assert row["speaks"] == [
+        {"text": "newest hello", "ts": 104.0},
+        {"text": "second hello", "ts": 103.0},
+        {"text": "first hello", "ts": 102.0},
+    ]
 
 
 def test_unknown_method_is_a_clean_rpc_error():
