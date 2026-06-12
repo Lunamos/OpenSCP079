@@ -28,6 +28,9 @@
 - attach 不唤醒 resting chara；无言到访零痕迹；常驻 chara 一生只招呼一次
   （重开页面不再重放招呼）。UI 配合：resting 做沉睡氛围 + "说话会唤醒它"。
 - works.list 的点目录误杀已修（后端修复，前端无需动作）。
+- **Telegram 网关已落地**（你们的预置 UI 可点亮）：`adapters.telegram =
+  {bot_token, api_base?}`；长轮询无公网 URL；私聊 v1（群聊 v2）；429/断线
+  走 DeliveryDeferred；bot_token 自动被 messaging.get 掩码。
 - **辅助模型（#14）**：`defaults.set {aux_models: {draft?|transcribe?|
   avatar?|compact?}}`（空值=回到主模型，未知任务=报错）；public defaults
   带 `aux_models`；cards.draft/transcribe.card/card.avatar_draft 未显式
