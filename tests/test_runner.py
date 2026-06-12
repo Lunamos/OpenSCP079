@@ -1,7 +1,7 @@
 
 import pytest
 
-from lunamoth.tools.runner import os_sandbox_available, run_terminal
+from lunamoth.tools.runner import os_sandbox_available, run_terminal, truncate_middle
 
 
 def test_dir_runs_any_command(tmp_path):
@@ -53,6 +53,34 @@ def test_timeout_keeps_partial_output(tmp_path):
     assert "timed out after 1s" in out
     assert "早期输出" in out  # what the command printed before the cut survives
     assert "oops" in out
+
+
+def test_truncate_middle_keeps_head_and_tail_with_marker():
+    # Audit #15: 40% head / 60% tail around an explicit marker, never a
+    # silent last-N-chars cut.
+    text = "H" * 5000 + "M" * 5000 + "T" * 5000
+    out = truncate_middle(text, 1000)
+    assert out.startswith("H" * 400)          # 40% head survives
+    assert out.endswith("T" * 600)            # 60% tail survives
+    assert "M" not in out                     # the middle is what was cut
+    assert "14000 chars omitted out of 15000 total" in out
+    # Total stays ~cap (cap + the marker line).
+    assert len(out) < 1000 + 200
+
+
+def test_truncate_middle_short_output_untouched():
+    assert truncate_middle("short", 1000) == "short"
+
+
+def test_long_output_truncated_head_and_tail(tmp_path):
+    ws = tmp_path / "workspace"
+    out = run_terminal(
+        "python3 -c \"print('HEADMARK' + 'x'*30000 + 'TAILMARK')\"",
+        ws, isolation="dir", timeout=15,
+    )
+    assert "HEADMARK" in out                  # the head is no longer thrown away
+    assert "TAILMARK" in out
+    assert "chars omitted out of" in out      # explicit marker, no silent cut
 
 
 def test_credentials_are_stripped(tmp_path, monkeypatch):

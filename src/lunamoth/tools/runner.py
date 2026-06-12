@@ -45,8 +45,29 @@ _log = get_logger("runner")
 
 DEFAULT_TIMEOUT = 30
 _OUTPUT_CAP = 12000
+_STDERR_CAP = 2000
 _KILL_GRACE = 1.0    # seconds between SIGTERM and SIGKILL on timeout
 _DRAIN_DEADLINE = 1.0  # bounded non-blocking pipe drain after the group is killed
+
+
+def truncate_middle(text: str, cap: int) -> str:
+    """Explicit head+tail truncation (audit #15; hermes terminal_tool.py:2406).
+
+    Keeps 40% head (error messages often appear early) and 60% tail (the most
+    recent output) around a marker stating how much was cut. A silent
+    last-N-chars cut hides the head — exactly where compile/launch errors live —
+    and reads as complete output, sending the model down wrong paths.
+    """
+    if len(text) <= cap:
+        return text
+    head = int(cap * 0.4)
+    tail = cap - head
+    omitted = len(text) - head - tail
+    marker = (
+        f"\n\n... [output truncated — {omitted} chars omitted out of {len(text)} total; "
+        f"kept the first {head} and last {tail} chars] ...\n\n"
+    )
+    return text[:head] + marker + text[-tail:]
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -185,8 +206,8 @@ def run_terminal(
             out_b = _drain_nonblocking(proc.stdout, _DRAIN_DEADLINE)
             err_b = _drain_nonblocking(proc.stderr, _DRAIN_DEADLINE)
         parts = [f"[timed out after {timeout}s]"]
-        out = out_b.decode("utf-8", errors="replace")[-_OUTPUT_CAP:].strip()
-        err = err_b.decode("utf-8", errors="replace")[-2000:].strip()
+        out = truncate_middle(out_b.decode("utf-8", errors="replace"), _OUTPUT_CAP).strip()
+        err = truncate_middle(err_b.decode("utf-8", errors="replace"), _STDERR_CAP).strip()
         if out:
             parts.append(f"partial STDOUT:\n{out}")
         if err:
@@ -195,8 +216,8 @@ def run_terminal(
     _log.info("terminal (%s, net=%s) exit=%d in %.1fs: %.120s",
               isolation, "on" if allow_network else "off", proc.returncode, time.monotonic() - t0, command)
 
-    out = (out_b or b"").decode("utf-8", errors="replace")[-_OUTPUT_CAP:]
-    err = (err_b or b"").decode("utf-8", errors="replace")[-2000:]
+    out = truncate_middle((out_b or b"").decode("utf-8", errors="replace"), _OUTPUT_CAP)
+    err = truncate_middle((err_b or b"").decode("utf-8", errors="replace"), _STDERR_CAP)
     parts = [f"exit={proc.returncode}"]
     if out:
         parts.append(f"STDOUT:\n{out}")
