@@ -5,6 +5,6 @@ deliver only :class:`TextDelta(channel="say") <lunamoth.protocol.events.TextDelt
 to external platforms. Muse/thinking/tool events stay inside the house.
 """
 
-from .base import Adapter, InboundMessage
+from .base import Adapter, DeliveryDeferred, InboundMessage
 
-__all__ = ["Adapter", "InboundMessage"]
+__all__ = ["Adapter", "DeliveryDeferred", "InboundMessage"]

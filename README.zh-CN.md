@@ -192,5 +192,36 @@ lunamoth --plain          # 旧版纯终端模式
 - [x] **Remote TUI 网关基础** —— `lunamoth serve NAME --stdio` 现在把已激活会话暴露为换行分隔 JSON-RPC；`lunamoth serve NAME --host 127.0.0.1 --port 8137` 用同一套 dispatch 暴露为带 token 鉴权的 WebSocket。WebSocket 依赖是可选项，用 `uv sync --extra server` 安装。默认只绑定回环地址；是否绑定公网接口由操作者自行决定。
 - [x] **桌面端卡片工作室** —— Web 卡册现在可以从一段灵感文字生成可编辑的 SillyTavern V3 角色卡草稿，包含内嵌世界条目、种子目标、存在/演员化身立场、主题色与安全过滤后的 SVG 头像；创作者 review 并保存前不会落盘。
 - [x] **可读的 Web 对话** —— 桌面对话把思考、自语 / muse、系统 / GM 行、Super Chat 发言与工具工作区分成五种视觉样式；流式处理中始终显示当前工作状态，看板也能看到各角色最近的 Super Chat。
-- [x] **Messaging 网关（先接企业微信）** —— `lunamoth gateway NAME` 在一个已激活 chara 后运行 `~/.lunamoth/sessions/NAME/messaging.json`；适配器只投递 `say` 文本（包括 idle 中 `speak` 工具说给用户的话），muse / thinking / tool 事件都不出门。首个适配器是企业微信自建应用；回调加解密用可选依赖 `uv sync --extra messaging`，公网回调地址需要操作者自行用 frp / Tailscale / VPS / HTTPS 暴露，并用 sender user ID 做 allowlist。微信个人号暂不内置：它依赖非官方扫码桥，有封号风险；适配器 seam 保留给未来自愿 opt-in。
+- [x] **Messaging 网关（企业微信 + 个人微信 + QQ）** —— `lunamoth gateway NAME` 在一个已激活 chara 后运行 `~/.lunamoth/sessions/NAME/messaging.json`；适配器只投递 `say` 文本（包括 idle 中 `speak` 工具说给用户的话），muse / thinking / tool 事件都不出门。企业微信自建应用使用 stdlib 回调服务器；回调加解密用可选依赖 `uv sync --extra messaging`。
+
+  **个人微信 / iLink ClawBot 设置：** 在 `messaging.json` 里加入 `weixin` 适配器，然后运行 `lunamoth gateway NAME`，用手机微信扫描终端里的二维码（需要 ClawBot 插件；iOS ≥ 8.0.70 / Android ≥ 8.0.69）。登录凭据会保存在会话目录的 `weixin_state.json`，不会写进 `messaging.json`；如果安装了可选的 `qrcode` 包，终端会显示 ASCII 二维码，同时网关一定会打印 `api.qrserver.com` 备用链接。当前只支持文本；媒体 / CDN 加密不在范围内。微信要求每个用户先发来一条消息以提供 `context_token`，所以 bot 只能主动联系本会话里已经说过话的人；首次接触前的 unattended `speak` 会清楚记录 “waiting for the human to say hi first”，不会假装发出或走其他 fallback。
+
+  ```json
+  {
+    "allowed_senders": ["<第一次接触后看到的 ilink_user_id>"],
+    "adapters": {
+      "weixin": {
+        "base_url": "https://ilinkai.weixin.qq.com",
+        "bot_type": "3",
+        "long_poll_timeout_ms": 35000,
+        "api_timeout_ms": 15000
+      }
+    }
+  }
+  ```
+
+  **QQ / OneBot v11 设置：** 运行 NapCat，在它自己的 WebUI 里扫码登录 QQ，启用 forward WebSocket，然后把 WebSocket URL 和你自己的 QQ 号写进 `messaging.json`。LunaMoth 是 WebSocket client；它不会开监听端口，也不会接触 QQ 凭据。`peer_id` 用于 unattended `speak`，必须填“你自己的 QQ 号”；对私聊入站消息的回复会发回入站 sender。v1 只拼接 text segment，其它 OneBot segment 会被忽略。
+
+  ```json
+  {
+    "allowed_senders": ["<你的 QQ 号>"],
+    "adapters": {
+      "qq": {
+        "url": "ws://127.0.0.1:3001",
+        "access_token": "optional",
+        "peer_id": "<你的 QQ 号>"
+      }
+    }
+  }
+  ```
 - [x] **桌面壳（Electron，v1）** —— `apps/desktop/` 用一层薄 Electron 窗口包住 `lunamoth desktop`（沿用官方 Hermes Desktop 的形态：壳自己没有渲染器，界面由后端伺服的 `front/web/` 提供）；窗口未聚焦时 `speak` 走系统通知。`cd apps/desktop && npm i && npm run dev`。

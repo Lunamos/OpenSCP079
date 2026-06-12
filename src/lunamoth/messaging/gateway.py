@@ -13,9 +13,11 @@ from typing import Any
 
 from ..protocol import SAY, TextDelta
 from ..protocol.api import CharaHandle
-from .base import Adapter, InboundMessage
+from .base import Adapter, DeliveryDeferred, InboundMessage
+from .qq import QQAdapter
 from .text import split_text
 from .wecom import WeComAdapter
+from .weixin import WeixinAdapter
 
 _log = logging.getLogger("lunamoth.messaging.gateway")
 
@@ -53,6 +55,10 @@ def make_adapters(config: dict[str, Any]) -> list[Adapter]:
             raise ValueError(f"adapter {name!r} config must be an object")
         if name == "wecom":
             out.append(WeComAdapter(adapter_config))
+        elif name == "weixin":
+            out.append(WeixinAdapter(adapter_config))
+        elif name == "qq":
+            out.append(QQAdapter(adapter_config))
         else:
             raise ValueError(f"unknown messaging adapter {name!r}")
     if not out:
@@ -198,28 +204,32 @@ class MessagingGateway:
         return sender_id in self.allowed_senders or "*" in self.allowed_senders
 
     def _process_inbound(self, adapter: Adapter, msg: InboundMessage) -> None:
-        sender = str(msg.sender_id)
-        if not self._allowed(sender):
-            self._refuse_unknown_once_per_day(adapter, sender)
-            _log.info("ignored unauthorized messaging sender %s (%s)", sender, msg.sender_name)
-            return
+        adapter.set_reply_target(msg)
+        try:
+            sender = str(msg.sender_id)
+            if not self._allowed(sender):
+                self._refuse_unknown_once_per_day(adapter, sender)
+                _log.info("ignored unauthorized messaging sender %s (%s)", sender, msg.sender_name)
+                return
 
-        now = time.monotonic()
-        self._last_user_at = now
-        self._next_idle_at = now + self._cycle_pause()
-        if not self._present:
-            self.handle.set_present(True)
-            self._present = True
+            now = time.monotonic()
+            self._last_user_at = now
+            self._next_idle_at = now + self._cycle_pause()
+            if not self._present:
+                self.handle.set_present(True)
+                self._present = True
 
-        text = msg.text.strip()
-        if not text:
-            return
-        if text.startswith("/"):
-            reply = self.handle.command(text)
-            if reply.text:
-                self._send(adapter, reply.text)
-            return
-        self._stream_to_adapter(adapter, self.handle.stream_user(text))
+            text = msg.text.strip()
+            if not text:
+                return
+            if text.startswith("/"):
+                reply = self.handle.command(text)
+                if reply.text:
+                    self._send(adapter, reply.text)
+                return
+            self._stream_to_adapter(adapter, self.handle.stream_user(text))
+        finally:
+            adapter.clear_reply_target()
 
     def _refuse_unknown_once_per_day(self, adapter: Adapter, sender_id: str) -> None:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -279,4 +289,7 @@ class MessagingGateway:
         max_len = int(getattr(adapter, "max_message_length", 0) or 0)
         parts = split_text(text, max_len) if max_len else [text]
         for part in parts:
-            adapter.send(part)
+            try:
+                adapter.send(part)
+            except DeliveryDeferred as e:
+                _log.error("messaging adapter %s could not deliver: %s", adapter.name, e)

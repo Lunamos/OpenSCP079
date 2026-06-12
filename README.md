@@ -192,5 +192,36 @@ This project began as an SCP fan work: an attempt to recreate **SCP-079** in the
 - [x] **Remote TUI gateway foundation** — `lunamoth serve NAME --stdio` now exposes the activated session as newline-delimited JSON-RPC, and `lunamoth serve NAME --host 127.0.0.1 --port 8137` exposes the same dispatch over a token-authenticated WebSocket. Install the optional WebSocket dependency with `uv sync --extra server`. The default bind is loopback; binding to a public interface is an operator decision.
 - [x] **Desktop card studio** — the web deck can now draft an editable SillyTavern V3 card from prose inspiration, including embedded world entries, seed goals, an embodiment stance, theme color, and a sanitized SVG avatar; nothing is saved until the creator reviews and saves.
 - [x] **Legible web chat** — the desktop chat now gives thinking, muse/self-talk, system/GM lines, Super Chat speaks, and tool work distinct looks, with an always-visible in-flight work state and a board Super Chat feed.
-- [x] **Messaging gateway (WeCom first)** — `lunamoth gateway NAME` runs one activated chara behind `~/.lunamoth/sessions/NAME/messaging.json`; adapters deliver only `say` text (including idle `speak` output) and drop muse/thinking/tool chatter. The first adapter is WeCom/Enterprise WeChat self-built apps; install callback crypto with `uv sync --extra messaging`, expose the stdlib callback server yourself (frp/Tailscale/VPS/public HTTPS), and allowlist sender user IDs. Personal WeChat is intentionally out of scope for now because it requires unofficial QR bridges with account-ban risk; the adapter seam leaves that as future opt-in work.
+- [x] **Messaging gateway (WeCom + personal WeChat + QQ)** — `lunamoth gateway NAME` runs one activated chara behind `~/.lunamoth/sessions/NAME/messaging.json`; adapters deliver only `say` text (including idle `speak` output) and drop muse/thinking/tool chatter. WeCom/Enterprise WeChat self-built apps use the stdlib callback server plus callback crypto from `uv sync --extra messaging`.
+
+  **Personal WeChat / iLink ClawBot setup:** add a `weixin` adapter, then run `lunamoth gateway NAME` and scan the terminal QR with your phone WeChat (requires the ClawBot plugin; iOS ≥ 8.0.70 / Android ≥ 8.0.69). Credentials are saved in `weixin_state.json` in the session directory, not in `messaging.json`; terminal QR ASCII uses the optional `qrcode` package, and the gateway always prints an `api.qrserver.com` fallback URL. Text-only iLink support intentionally does not implement media/CDN crypto. The bot can only message users who have messaged it in the current session because WeChat requires a per-user `context_token`; an unattended `speak` before first contact logs “waiting for the human to say hi first” instead of inventing a fallback.
+
+  ```json
+  {
+    "allowed_senders": ["<your ilink_user_id after first contact>"],
+    "adapters": {
+      "weixin": {
+        "base_url": "https://ilinkai.weixin.qq.com",
+        "bot_type": "3",
+        "long_poll_timeout_ms": 35000,
+        "api_timeout_ms": 15000
+      }
+    }
+  }
+  ```
+
+  **QQ / OneBot v11 setup:** run NapCat, log in by QR in its WebUI, enable forward WebSocket, then paste the WebSocket URL and your own QQ number into `messaging.json`. LunaMoth is the WebSocket client; it never runs a listener and never handles QQ credentials. `peer_id` is required for unattended `speak`; replies to inbound private messages target the inbound sender. Text segments are concatenated and non-text OneBot segments are ignored for v1.
+
+  ```json
+  {
+    "allowed_senders": ["<your QQ number>"],
+    "adapters": {
+      "qq": {
+        "url": "ws://127.0.0.1:3001",
+        "access_token": "optional",
+        "peer_id": "<your QQ number>"
+      }
+    }
+  }
+  ```
 - [x] **Desktop shell (Electron, v1)** — `apps/desktop/` wraps `lunamoth desktop` in a thin Electron window (official Hermes Desktop's shape: no renderer of its own, the backend serves `front/web/`); system notifications for `speak` while the window is unfocused. `cd apps/desktop && npm i && npm run dev`.

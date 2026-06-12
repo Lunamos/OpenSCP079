@@ -6,6 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 
+class DeliveryDeferred(RuntimeError):
+    """A visible non-delivery that should not stop the gateway loop.
+
+    This is for platform rules such as "the human must message first" where no
+    fallback route exists, but continuing to listen is the correct behavior.
+    """
+
+
 @dataclass(frozen=True)
 class InboundMessage:
     """Normalized inbound item pushed by adapters.
@@ -40,6 +48,17 @@ class Adapter(abc.ABC):
     @abc.abstractmethod
     def send(self, text: str) -> None:
         raise NotImplementedError
+
+    def set_reply_target(self, message: InboundMessage) -> None:
+        """Select the destination for sends caused by one inbound message.
+
+        Most adapters can ignore this and keep their own current recipient.
+        Direct chat adapters use it so replies go to the inbound sender while
+        unattended speak output can still use their configured default peer.
+        """
+
+    def clear_reply_target(self) -> None:
+        """Clear the per-inbound destination selected by :meth:`set_reply_target`."""
 
     def close(self) -> None:
         """Stop platform I/O. Adapters with background servers override this."""
