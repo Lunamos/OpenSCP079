@@ -14,7 +14,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-_ASSETS = Path(__file__).resolve().parent / "assets"
+_ASSETS = Path(__file__).resolve().parent.parent / "assets"
 
 # Pale moonlit blue at the top fading to white at the bottom.
 _TOP = (0x6D, 0xB3, 0xE0)

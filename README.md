@@ -1,4 +1,6 @@
-<h1 align="center">LunaMoth 🌙</h1>
+<p align="center">
+  <img src="assets/banner.png" alt="LunaMoth — The Character That Lives With You" width="100%">
+</p>
 
 <p align="center"><i>An agentic character tavern — character cards (each carrying its world inside), tool packs, and hard limits, composed at launch.</i></p>
 

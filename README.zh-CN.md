@@ -1,4 +1,6 @@
-<h1 align="center">LunaMoth 🌙</h1>
+<p align="center">
+  <img src="assets/banner.png" alt="LunaMoth — 与你一同生活的角色" width="100%">
+</p>
 
 <p align="center"><i>Agentic 角色酒馆 —— 角色卡（世界书内嵌于卡中）、工具包与硬限制，在启动时自由组合。</i></p>
 

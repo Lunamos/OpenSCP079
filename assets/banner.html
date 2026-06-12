@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<!-- LunaMoth GitHub banner source. Render with headless Chrome:
+     chrome --headless --screenshot=banner.png --window-size=1280,400 \
+            --force-device-scale-factor=2 file://.../banner.html
+     Fonts are macOS system serifs (Didot / Hoefler Text) — render on macOS. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 400px; overflow: hidden; }
+  body {
+    position: relative;
+    background:
+      radial-gradient(ellipse 900px 520px at 50% 46%, rgba(110, 170, 220, .34), rgba(110, 170, 220, 0) 68%),
+      radial-gradient(ellipse 1400px 700px at 50% 120%, #16314c, #0a1726 70%);
+    background-color: #0a1726;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* stars */
+  .star { position: absolute; border-radius: 50%; background: #eaf7ff; }
+
+  /* the moth sigil */
+  .sigil { width: 108px; margin-bottom: 2px; opacity: .96;
+           filter: drop-shadow(0 0 18px rgba(160, 210, 245, .55)); }
+
+  h1 {
+    font-family: "Didot", "Hoefler Text", serif;
+    font-weight: 400;
+    font-size: 164px;
+    line-height: 1.04;
+    letter-spacing: .015em;
+    background: linear-gradient(180deg, #ffffff 30%, #a8cfec 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 64px rgba(140, 195, 240, .35);
+  }
+
+  .sub {
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 26px;
+  }
+  .sub .rule {
+    width: 130px; height: 1px;
+    background: linear-gradient(90deg, rgba(159, 208, 238, 0), rgba(159, 208, 238, .75));
+  }
+  .sub .rule.right { transform: scaleX(-1); }
+  .sub em {
+    font-family: "Hoefler Text", "Didot", serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 27px;
+    letter-spacing: .14em;
+    color: #9fd0ee;
+    white-space: nowrap;
+  }
+
+  .hanzi {
+    position: absolute;
+    right: 54px; top: 50%;
+    transform: translateY(-50%);
+    writing-mode: vertical-rl;
+    font-family: "Songti SC", "STSong", serif;
+    font-size: 30px;
+    letter-spacing: .42em;
+    color: rgba(159, 208, 238, .38);
+  }
+</style>
+</head>
+<body>
+  <!-- scattered stars -->
+  <div class="star" style="left:128px;  top:84px;  width:3px; height:3px; opacity:.7"></div>
+  <div class="star" style="left:236px;  top:248px; width:2px; height:2px; opacity:.45"></div>
+  <div class="star" style="left:332px;  top:120px; width:2px; height:2px; opacity:.55"></div>
+  <div class="star" style="left:184px;  top:330px; width:2px; height:2px; opacity:.35"></div>
+  <div class="star" style="left:906px;  top:96px;  width:3px; height:3px; opacity:.65"></div>
+  <div class="star" style="left:1042px; top:208px; width:2px; height:2px; opacity:.5"></div>
+  <div class="star" style="left:1130px; top:118px; width:3px; height:3px; opacity:.7"></div>
+  <div class="star" style="left:986px;  top:322px; width:2px; height:2px; opacity:.4"></div>
+  <div class="star" style="left:78px;   top:196px; width:2px; height:2px; opacity:.5"></div>
+  <div class="star" style="left:1196px; top:276px; width:2px; height:2px; opacity:.45"></div>
+
+  <!-- the moth sigil: same geometry as assets/icon.svg, moonlight white -->
+  <svg class="sigil" viewBox="240 270 544 560" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <g id="half">
+        <path d="M 506 402 C 490 360 470 328 442 308 C 470 318 496 352 510 394 Z"/>
+        <path d="M 507 436 C 460 408 380 360 318 342 C 290 334 276 344 280 366
+                 C 288 412 330 472 394 508 C 442 535 486 542 504 532 Z"/>
+        <path d="M 503 542 C 455 538 400 556 386 596 C 372 634 392 666 424 672
+                 C 420 716 426 756 444 788 C 450 798 462 796 464 784
+                 C 470 730 476 670 486 626 C 492 596 500 560 503 548 Z"/>
+        <circle cx="376" cy="424" r="17" fill="#0a1726"/>
+        <circle cx="376" cy="424" r="7"/>
+        <circle cx="428" cy="606" r="12" fill="#0a1726"/>
+      </g>
+    </defs>
+    <g fill="#dcebfa" transform="rotate(-8 512 530)">
+      <use href="#half"/>
+      <use href="#half" transform="matrix(-1,0,0,1,1024,0)"/>
+      <path d="M 512 404 C 530 404 538 426 537 458 C 536 510 526 562 512 588
+               C 498 562 488 510 487 458 C 486 426 494 404 512 404 Z"/>
+      <circle cx="512" cy="404" r="19"/>
+    </g>
+  </svg>
+
+  <h1>LunaMoth</h1>
+
+  <div class="sub">
+    <div class="rule"></div>
+    <em>The Character That Lives With You</em>
+    <div class="rule right"></div>
+  </div>
+
+  <div class="hanzi">月　蛾</div>
+</body>
+</html>
