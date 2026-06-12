@@ -271,6 +271,18 @@ def _reasoning(agent, session, arg: str) -> Reply:
                  {"reasoning": cur})
 
 
+def _model(agent, session, arg: str) -> Reply:
+    want = arg.strip()
+    if want:
+        agent.swap_model(want)
+        return Reply(True,
+                     f"model = {agent.settings.model} (this session only — the configured default is unchanged)",
+                     {"model": agent.settings.model, "context_max": agent.context_limit()})
+    return Reply(True,
+                 f"model = {agent.settings.model}  (usage: /model <id> — session-scoped hot swap)",
+                 {"model": agent.settings.model, "context_max": agent.context_limit()})
+
+
 def _help(agent, session, arg: str) -> Reply:
     lines = [f"{c.info.usage:<34} {c.info.help}" for c in _REGISTRY.values()]
     return Reply(True, "\n".join(lines), verbose=True)
@@ -302,6 +314,7 @@ _REGISTRY: dict[str, Command] = dict([
     _cmd("patience", "/patience <seconds>", "base seconds between spontaneous cycles", _patience),
     _cmd("thinking", "/thinking on|off", "show the thinking text (default: ✶ indicator only)", _thinking),
     _cmd("reasoning", "/reasoning off|low|medium|high", "reasoning effort (default medium)", _reasoning),
+    _cmd("model", "/model <id>", "session-scoped model hot-swap (empty: show current)", _model),
     _cmd("compact", "/compact", "fold older turns into a summary now", _compact),
     _cmd("reset", "/reset", "zero session context (new transcript epoch)", _reset),
     _cmd("help", "/help", "this list", _help),

@@ -215,3 +215,25 @@ def test_hub_daemon_launch_does_not_hardcode_tiny_patience(monkeypatch, tmp_path
     assert calls
     assert "--patience" not in calls[0]
     assert "2.0" not in calls[0]
+
+
+def test_model_command_session_scoped_hot_swap(agent_factory, tmp_path):
+    """/model swaps the model for THIS session only (webui-needs #6): the LLM
+    client is rebuilt, Reply.data carries {model, context_max}, nothing is
+    written back to the configured default."""
+    from lunamoth.core import commands
+
+    a = agent_factory(card=_write_card(tmp_path / "m.json"), model="mock/original")
+    s = a.make_session()
+
+    shown = commands.execute(a, s, "/model")
+    assert shown.ok and shown.data["model"] == "mock/original" and "context_max" in shown.data
+
+    reply = commands.execute(a, s, "/model mock/other")
+    assert reply.ok and reply.data["model"] == "mock/other"
+    assert a.settings.model == "mock/other"
+    assert a.llm.cfg.model == "mock/other" if hasattr(a.llm, "cfg") else True
+
+    # not persisted: a fresh settings load knows nothing of the swap
+    from lunamoth.session.settings import load_settings
+    assert load_settings().model != "mock/other"

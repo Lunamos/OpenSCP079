@@ -128,6 +128,16 @@ class LunaMothAgent:
             context_window=self.context_limit(),
         )
 
+    def swap_model(self, model: str) -> None:
+        """Session-scoped model hot-swap (/model): rebuilds only the LLM client.
+
+        Deliberately NOT persisted — a restart returns to the configured
+        model; the global default is untouched. The stable prefix is not
+        invalidated (provider prompt caches are per-model anyway)."""
+        self.settings.model = model.strip()
+        self.llm = LLMClient(self.settings.to_llm_config())
+        self.audit.write("model_swap", model=self.settings.model)
+
     # ---- persona / tool pack / limits (independent composable layers) -------------
 
     def _load_cards(self) -> None:
