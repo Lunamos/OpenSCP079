@@ -612,6 +612,10 @@ class LunaMothAgent:
             yield TextDelta(commands.execute(self, session, text).text)
             return
         self.state.clear_rest()  # a word from the user always wakes the chara
+        # A fresh word from the operator is a redirect: blocked/failing tools
+        # get a clean slate (the loop guard protects unattended streaks, not
+        # the conversation).
+        self.tools.reset_guardrails()
         # After a long real-world silence, note the gap once — the chara should
         # feel time passing without timestamps littering every message.
         self._note_time_gap(session)
