@@ -14,14 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from ..content.knobs import (
-    TEMPO_PRESETS,
-    embodiment_copy,
-    normalize_embodiment,
-    parse_patience,
-    parse_tempo,
-    tempo_label,
-)
+from ..content.knobs import embodiment_copy, normalize_embodiment, parse_patience
 from ..presence import normalize_mode
 from ..protocol.api import CommandInfo, Reply
 
@@ -223,29 +216,6 @@ def _quiet(agent, session, arg: str) -> Reply:
                  {"quiet": agent.settings.quiet})
 
 
-def _tempo(agent, session, arg: str) -> Reply:
-    want = arg.strip()
-    if want:
-        tempo = parse_tempo(want)
-        if tempo is None:
-            presets = "|".join(TEMPO_PRESETS)
-            return Reply(False, f"usage: /tempo <{presets}|0.1..10> — chara time-flow rate")
-        _persist(agent, tempo=tempo)
-        return Reply(
-            True,
-            f"tempo = {tempo_label(tempo)} (persisted — spontaneous cycle pause = patience ÷ tempo)",
-            {"tempo": tempo},
-        )
-    cur = agent.effective_tempo() if hasattr(agent, "effective_tempo") else 1.0
-    source = "operator" if parse_tempo(getattr(agent.settings, "tempo", 0.0)) is not None else "card/default"
-    presets = "|".join(TEMPO_PRESETS)
-    return Reply(
-        True,
-        f"tempo = {tempo_label(cur)} ({source})  (usage: /tempo <{presets}|0.1..10>)",
-        {"tempo": cur},
-    )
-
-
 def _patience(agent, session, arg: str) -> Reply:
     want = arg.strip()
     if want:
@@ -255,7 +225,7 @@ def _patience(agent, session, arg: str) -> Reply:
         _persist(agent, patience=patience, patience_override=True)
         return Reply(
             True,
-            f"patience = {patience:g}s (persisted — spontaneous cycle pause = patience ÷ tempo)",
+            f"patience = {patience:g}s (persisted — base pause between spontaneous cycles)",
             {"patience": patience},
         )
     cur = agent.effective_patience() if hasattr(agent, "effective_patience") else 600.0
@@ -359,7 +329,6 @@ _REGISTRY: dict[str, Command] = dict([
     _cmd("allow-dir", "/allow-dir <path>", "extra writable path (sandbox)", _allow_dir),
     _cmd("mode", "/mode live|chat", "live: keeps creating while you watch; chat: replies only", _mode),
     _cmd("quiet", "/quiet <seconds>", "silence before it resumes its own work (default 300)", _quiet),
-    _cmd("tempo", "/tempo <preset|0.1..10>", "chara time-flow rate (swift/steady/slow/glacial)", _tempo),
     _cmd("patience", "/patience <seconds>", "base seconds between spontaneous cycles", _patience),
     _cmd("embodiment", "/embodiment literal|actor", "how tools relate to the character's fiction", _embodiment),
     _cmd("thinking", "/thinking on|off", "show the thinking text (default: ✶ indicator only)", _thinking),

@@ -1534,7 +1534,7 @@ def _draft_goals(draft: dict[str, Any]) -> list[str]:
 def draft_to_card(draft: dict[str, Any], origin_text: str = "", as_draft: bool = False) -> dict[str, Any]:
     """Assemble a V3 card object from a (possibly user-edited) draft."""
     world_entries = _draft_world_entries(draft)
-    ext: dict[str, Any] = {"origin": origin_text[:8000], "embodiment": "literal", "tempo": "normal"}
+    ext: dict[str, Any] = {"origin": origin_text[:8000], "embodiment": "literal"}
     if as_draft:
         ext["draft"] = True
     goals = _draft_goals(draft)
@@ -1544,8 +1544,6 @@ def draft_to_card(draft: dict[str, Any], origin_text: str = "", as_draft: bool =
         ext["rules"] = str(draft["rules"])
     if draft.get("toolpack_hint"):
         ext["toolpack"] = str(draft["toolpack_hint"])
-    if draft.get("tempo"):
-        ext["tempo"] = str(draft["tempo"])
     if draft.get("tagline"):
         ext["tagline"] = str(draft["tagline"]).strip()
     color = _clean_theme_color(draft.get("theme_color"))

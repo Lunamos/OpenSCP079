@@ -1,13 +1,12 @@
-"""User/card-facing chara knobs: tempo and embodiment."""
+"""User/card-facing chara knobs: patience and embodiment."""
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
 
-from lunamoth.content.knobs import parse_patience, parse_tempo
+from lunamoth.content.knobs import parse_patience
 from lunamoth.session.settings import Settings
 
 
@@ -60,55 +59,27 @@ def _blob(blocks: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
-def test_tempo_presets_parse_and_bad_values_reject():
-    assert parse_tempo("swift") == 2.0
-    assert parse_tempo("steady") == 1.0
-    assert parse_tempo("slow") == 0.5
-    assert parse_tempo("glacial") == 0.25
-    assert parse_tempo("2x") == 2.0
-    assert parse_tempo(0) is None
-    assert parse_tempo("garbage") is None
-
-
-def test_card_tempo_precedence_and_tempo_command_persists(agent_factory, tmp_path):
+def test_tempo_knob_is_retired_but_old_cards_still_load(agent_factory, tmp_path):
+    """tempo was removed entirely (owner decision 2026-06-13): a card that still
+    declares `extensions.lunamoth.tempo` loads fine — the key is simply ignored."""
     from lunamoth.core import commands
+    from lunamoth.protocol.api import CharaHandle
 
-    card = _write_card(tmp_path / "tempo.json", {"toolpack": "sandbox", "tempo": "slow"})
+    card = _write_card(tmp_path / "old-tempo.json", {"toolpack": "sandbox", "tempo": "slow", "patience": 42})
     a = agent_factory(card=card)
     s = a.make_session()
-    assert a.effective_tempo() == 0.5
+    assert a.char_name() == "KnobCard"           # the card loaded cleanly
+    assert a.effective_patience() == 42.0        # other knobs still respected
+    assert not hasattr(a, "effective_tempo")
 
-    reply = commands.execute(a, s, "/tempo swift")
-    assert reply.ok and reply.data == {"tempo": 2.0}
-    assert a.settings.tempo == 2.0
-    assert a.effective_tempo() == 2.0  # operator setting > card
-
-    reply = commands.execute(a, s, "/tempo 0")
-    assert not reply.ok and "usage: /tempo" in reply.text
-    reply = commands.execute(a, s, "/tempo nonsense")
-    assert not reply.ok and "usage: /tempo" in reply.text
-
-
-def test_snapshot_tempo_drives_effective_interval(agent_factory, tmp_path):
-    from lunamoth.protocol.api import CharaHandle
-    from lunamoth.front.tui.app import LunaMothTUI
-
-    card = _write_card(tmp_path / "tempo.json", {"toolpack": "sandbox", "tempo": 2.0})
-    a = agent_factory(card=card)
     handle = CharaHandle(agent=a)
     handle.attach(present=False)
     snap = handle.snapshot(fresh=True)
-    assert snap.tempo == 2.0
+    assert not hasattr(snap, "tempo")            # snapshot no longer carries it
 
-    app = object.__new__(LunaMothTUI)
-    app.handle = handle
-    app.base_patience = 8.0
-    assert app._cycle_pause() == 4.0
-    assert snap.quiet == a.settings.quiet  # tempo does not scale engagement quiet
-    until_before = time.time() + 9 * 60
-    a.tools.call("rest", minutes=10)
-    until = a.state.load()["rest_until"]
-    assert until > until_before  # tempo does not shorten the rest tool's explicit decision
+    reply = commands.execute(a, s, "/tempo swift")
+    assert not reply.ok and "unknown command" in reply.text
+    assert all(c.name != "tempo" for c in commands.infos())
 
 
 def test_patience_parses_positive_numerics_only():

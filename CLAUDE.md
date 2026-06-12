@@ -209,7 +209,7 @@ Every API request is assembled as **three zones**:
    > bundled rules closer (the latter two only when tools are enabled).
 
 Card override hooks: `extensions.lunamoth.{rules,rules_closer,embodiment,
-embodiment_bridge,tempo,goals,toolpack,memory_chars,on_attach,on_detach}`;
+embodiment_bridge,goals,toolpack,memory_chars,on_attach,on_detach}`;
 global `~/.lunamoth/rules.md`. (The old `world` path pointer is retired — it
 violated one-file; the embedded `character_book` replaced it, and a session
 config still carrying `world_path` is migrated once at load: entries merged
@@ -222,7 +222,8 @@ into the session's card, key stripped.)
   while watched.
 - **Its own pace**: `patience` (seconds between spontaneous cycles —
   `Settings.patience`, default 600, card hook `extensions.lunamoth.patience`,
-  `/patience`; precedence like tempo. NEVER reintroduce tiny defaults: a 2 s
+  `/patience`; precedence operator > card > default. NEVER reintroduce tiny
+  defaults: a 2 s
   daemon default once burned a real key's daily limit), `/quiet` (engagement:
   it sets work aside while you talk, resumes after N s of silence), the `rest`
   tool (it chooses its next wake, 1–120min; your message always wakes it —
@@ -230,10 +231,9 @@ into the session's card, key stripped.)
   wall-clock timestamp (ephemeral, in_context=False — the rules layer
   documents the convention); long silences get one gap note; day-level date
   rides the env facts.
-- **Tempo**: a chara's time-flow rate is card-declarable
-  (`extensions.lunamoth.tempo`) and operator-overridable (`/tempo`,
-  `Settings.tempo`; precedence operator > card > 1.0). It scales ONLY the pause
-  between spontaneous cycles (`patience ÷ tempo`), never `/quiet` or `rest`.
+- (Tempo is RETIRED, owner decision 2026-06-13: a chara's rhythm is `patience`
+  alone. No `/tempo`, no card hook, no scheduling math — old cards declaring
+  `extensions.lunamoth.tempo` still load; the key is ignored.)
 - **Embodiment stance**: `literal` (default) means today's digital-being model;
   `actor` injects a neutral bridge before Rules so tools remain real backstage
   while the fiction stays whole. Precedence is operator override
@@ -262,9 +262,8 @@ into the session's card, key stripped.)
    treat goals, how to spend unattended time — neutral suggestions, never
    orders. PARTIAL: embodiment shipped as `literal|actor` with a neutral bridge
    for actor stance; the rest of the curriculum remains open.
-2. **Tempo** — SHIPPED as card hook `extensions.lunamoth.tempo`, Settings
-   override + `/tempo`, and frontend scheduling (`patience ÷ tempo`) without
-   changing quiet/rest.
+2. (Tempo was shipped, then RETIRED 2026-06-13 — "时间流速" confused even its
+   owner; pacing is `patience` alone.)
 3. **A browse path for curiosity** — charas reading what interests them
    (today: terminal+`/net on` or an MCP fetch server; consider a bundled
    suggestion or note in the curriculum).

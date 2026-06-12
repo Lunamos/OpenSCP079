@@ -221,7 +221,7 @@ def test_card_from_draft_roundtrip():
     assert data["character_book"]["entries"][0]["keys"] == ["长夜图书馆"]
     assert data["extensions"]["lunamoth"]["toolpack"] == "sandbox"
     assert data["extensions"]["lunamoth"]["embodiment"] == "literal"
-    assert data["extensions"]["lunamoth"]["tempo"] == "normal"
+    assert "tempo" not in data["extensions"]["lunamoth"]
     assert data["extensions"]["lunamoth"]["draft"] is True
     assert data["extensions"]["lunamoth"]["origin"] == "深夜图书馆修书人"
     listed = result("cards.list")
@@ -290,7 +290,6 @@ def test_card_save_roundtrips_new_lunamoth_extension_fields():
     card = H.draft_to_card({
         **draft_payload(),
         "embodiment": "actor",
-        "tempo": "quiet",
     }, origin_text="orbital lantern keeper")
     r = result("card.save", {"data": card})
     raw = result("card.read", {"path": r["path"]})["raw"]
@@ -298,7 +297,7 @@ def test_card_save_roundtrips_new_lunamoth_extension_fields():
     assert ext["avatar_svg"].startswith("<svg")
     assert ext["theme_color"] == "#7C5CFF"
     assert ext["embodiment"] == "actor"
-    assert ext["tempo"] == "quiet"
+    assert "tempo" not in ext
     assert ext["tagline"] == "A gentle keeper of orbital lanterns"
     assert ext["goals"] == ["Map the mirror-season drift", "Welcome careful visitors"]
     assert raw["data"]["character_book"]["entries"][0]["keys"] == ["Orbital Garden"]
