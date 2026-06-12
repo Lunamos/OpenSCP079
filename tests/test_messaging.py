@@ -802,3 +802,203 @@ def test_qq_disconnected_send_does_not_crash_the_gateway(fast_send_retry, caplog
 
     assert handle.user_calls == ["hi"]
     assert any("could not deliver" in m for m in caplog.messages)  # logged, not raised
+
+
+# ---- Telegram long-poll adapter (roadmap C2: Telegram after qq.py) -------------------
+
+
+def _telegram_http_error(code, body):
+    import io
+    from urllib.error import HTTPError
+
+    raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    return HTTPError("https://api.telegram.org/botSECRET/method", code, "error", {}, io.BytesIO(raw))
+
+
+class FakeTelegramTransport:
+    """Each entry is a 200 payload dict, or an exception instance to raise."""
+
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.requests = []
+
+    def __call__(self, req, timeout=0):
+        self.requests.append((req, timeout))
+        if not self.payloads:
+            raise AssertionError("unexpected HTTP request")
+        item = self.payloads.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return FakeHTTPResponse(item)
+
+    def body(self, index):
+        return json.loads(self.requests[index][0].data.decode("utf-8"))
+
+
+def _telegram_update(update_id, text="hello", chat_id=42, chat_type="private", **message_extra):
+    message = {
+        "chat": {"id": chat_id, "type": chat_type},
+        "from": {"id": chat_id, "first_name": "Alice", "is_bot": False},
+    }
+    if text is not None:
+        message["text"] = text
+    message.update(message_extra)
+    return {"update_id": update_id, "message": message}
+
+
+def test_telegram_offset_persists_and_restart_never_replays(tmp_path):
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    state_path = tmp_path / "telegram_state.json"
+    transport = FakeTelegramTransport([
+        {"ok": True, "result": [_telegram_update(100), _telegram_update(101, text="again")]},
+    ])
+    adapter = TelegramAdapter({"bot_token": "tok"}, opener=transport, state_path=state_path)
+    inbox = queue.Queue()
+
+    assert adapter.poll_once(inbox) == 2
+    assert inbox.get_nowait().text == "hello"
+    assert inbox.get_nowait().text == "again"
+    assert transport.body(0).get("offset") is None  # fresh start: no offset yet
+    assert transport.body(0)["timeout"] == 25       # server-side long poll
+    assert transport.requests[0][1] > 25            # socket timeout outlives it
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["offset"] == 102  # last update_id + 1: confirmed, never replayed
+    assert state["last_chat_id"] == "42"
+    assert oct(state_path.stat().st_mode & 0o777) == "0o600"
+
+    # A NEW adapter (the restart) resumes from the persisted offset.
+    transport2 = FakeTelegramTransport([{"ok": True, "result": []}])
+    restarted = TelegramAdapter({"bot_token": "tok"}, opener=transport2, state_path=state_path)
+    assert restarted.poll_once(queue.Queue()) == 0
+    assert transport2.body(0)["offset"] == 102
+
+
+def test_telegram_default_state_path_honors_config_dir(monkeypatch, tmp_path):
+    from lunamoth.messaging.telegram import default_state_path
+
+    monkeypatch.setenv("LUNAMOTH_CONFIG_DIR", str(tmp_path))
+    assert default_state_path() == tmp_path.resolve() / "telegram_state.json"
+
+
+def test_telegram_update_carries_update_id_for_dedup():
+    from lunamoth.messaging.telegram import parse_update
+
+    msg = parse_update(_telegram_update(778899, chat_id=123456))
+    assert msg is not None
+    assert msg.sender_id == "123456"   # chat id = sender id in private chats
+    assert msg.sender_name == "Alice"
+    assert msg.message_id == "778899"  # str(update_id) keys the gateway dedup
+
+
+def test_telegram_ignores_groups_edits_channels_and_media():
+    from lunamoth.messaging.telegram import parse_update
+
+    assert parse_update(_telegram_update(1, chat_type="group")) is None
+    assert parse_update(_telegram_update(2, chat_type="supergroup")) is None
+    assert parse_update({"update_id": 3, "edited_message": {"text": "edited"}}) is None
+    assert parse_update({"update_id": 4, "channel_post": {"text": "post"}}) is None
+    assert parse_update(_telegram_update(5, text=None, photo=[{"file_id": "x"}])) is None
+    bot_update = _telegram_update(6)
+    bot_update["message"]["from"]["is_bot"] = True  # reply-loop guard
+    assert parse_update(bot_update) is None
+
+
+def test_telegram_declares_4096_split_for_the_gateway_splitter(tmp_path):
+    from lunamoth.messaging.telegram import TELEGRAM_TEXT_MAX, TelegramAdapter
+
+    adapter = TelegramAdapter({"bot_token": "tok"}, opener=FakeTelegramTransport([]),
+                              state_path=tmp_path / "telegram_state.json")
+    assert adapter.max_message_length == TELEGRAM_TEXT_MAX == 4096
+
+
+def test_telegram_429_send_is_delivery_deferred_and_honors_retry_after(tmp_path):
+    from lunamoth.messaging.base import DeliveryDeferred
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    now = [1000.0]
+    transport = FakeTelegramTransport([
+        _telegram_http_error(429, {"ok": False, "error_code": 429,
+                                   "description": "Too Many Requests: retry after 7",
+                                   "parameters": {"retry_after": 7}}),
+    ])
+    adapter = TelegramAdapter(
+        {"bot_token": "tok"}, opener=transport,
+        state_path=tmp_path / "telegram_state.json", monotonic=lambda: now[0],
+    )
+    adapter.set_reply_target(InboundMessage("42", "Alice", "hi"))
+
+    with pytest.raises(DeliveryDeferred, match="retry after 7s"):
+        adapter.send("first")
+    # retry_after is honored WITHOUT sleeping: the flood window defers
+    # preemptively (no HTTP request) until it has passed.
+    with pytest.raises(DeliveryDeferred, match="flood control active"):
+        adapter.send("second")
+    assert len(transport.requests) == 1
+    now[0] += 8.0
+    transport.payloads.append({"ok": True, "result": {"message_id": 1}})
+    adapter.send("third")
+    assert transport.body(1) == {"chat_id": 42, "text": "third"}
+
+
+def test_telegram_bad_token_is_a_clear_startup_error_not_a_retry_loop(tmp_path):
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    transport = FakeTelegramTransport([
+        _telegram_http_error(401, {"ok": False, "error_code": 401, "description": "Unauthorized"}),
+    ])
+    adapter = TelegramAdapter({"bot_token": "bad"}, opener=transport,
+                              state_path=tmp_path / "telegram_state.json")
+
+    with pytest.raises(RuntimeError, match="401 Unauthorized.*bot_token") as excinfo:
+        adapter.run(queue.Queue())
+    assert len(transport.requests) == 1   # exactly one getMe, no silent retrying
+    assert "bad" not in str(excinfo.value)  # the token never leaks into the error
+
+
+def test_telegram_send_network_failure_is_delivery_deferred(tmp_path):
+    from lunamoth.messaging.base import DeliveryDeferred
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    transport = FakeTelegramTransport([ConnectionResetError("socket dropped")])
+    adapter = TelegramAdapter({"bot_token": "tok"}, opener=transport,
+                              state_path=tmp_path / "telegram_state.json")
+    adapter.set_reply_target(InboundMessage("42", "Alice", "hi"))
+
+    with pytest.raises(DeliveryDeferred, match="network failure"):
+        adapter.send("hello")
+
+
+def test_telegram_unattended_speak_before_first_contact_is_deferred(tmp_path):
+    from lunamoth.messaging.base import DeliveryDeferred
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    adapter = TelegramAdapter({"bot_token": "tok"}, opener=FakeTelegramTransport([]),
+                              state_path=tmp_path / "telegram_state.json")
+    with pytest.raises(DeliveryDeferred, match="cannot message a user first"):
+        adapter.send("speak with nobody on record")
+
+
+def test_telegram_allowed_senders_filter_through_the_gateway(tmp_path):
+    from lunamoth.messaging.telegram import TelegramAdapter
+
+    handle = FakeHandle()
+    transport = FakeTelegramTransport([
+        {"ok": True, "result": {"message_id": 1}},  # the one refusal send
+        {"ok": True, "result": {"message_id": 2}},  # the allowed reply
+    ])
+    adapter = TelegramAdapter({"bot_token": "tok"}, opener=transport,
+                              state_path=tmp_path / "telegram_state.json")
+    adapter.run = lambda inbox: None  # the polling thread is not under test here
+    gateway = MessagingGateway(handle=handle, adapters=[adapter], allowed_senders=["42"], patience=999)
+
+    gateway.enqueue(adapter, InboundMessage("666", "Mallory", "hi", message_id="1"))
+    gateway.enqueue(adapter, InboundMessage("42", "Alice", "hi", message_id="2"))
+    assert gateway.tick(timeout=0)
+    assert gateway.tick(timeout=0)
+
+    assert handle.user_calls == ["hi"]  # only the allowed sender reached the chara
+    refusal = transport.body(0)
+    assert refusal["chat_id"] == 666 and "configured contacts" in refusal["text"]
+    assert transport.body(1) == {"chat_id": 42, "text": "reply"}
