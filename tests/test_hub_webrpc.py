@@ -256,3 +256,18 @@ def test_weixin_qr_status_wait_passes_through(monkeypatch):
 def test_weixin_qr_status_needs_qrcode():
     meta = wake_session()
     assert rpc_error("weixin.qr_status", {"name": meta.name})["code"] == -32602
+
+
+def test_works_list_visible_under_a_dot_dir_home(tmp_path, monkeypatch):
+    """Production sandboxes live under ~/.lunamoth — a dot-dir ancestor must
+    not hide every work (the filter judges only the path under the tree)."""
+    monkeypatch.setenv("LUNAMOTH_HOME", str(tmp_path / ".lunahome"))
+    meta = wake_session()
+    assert ".lunahome" in str(meta.sandbox_dir)
+    ws = meta.sandbox_dir / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "poem.md").write_text("moth", encoding="utf-8")
+    (ws / ".hidden.md").write_text("x", encoding="utf-8")
+    works = result("works.list", {"name": meta.name})
+    names = [w["name"] for w in works]
+    assert "poem.md" in names and ".hidden.md" not in names

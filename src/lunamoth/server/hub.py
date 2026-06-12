@@ -1355,7 +1355,9 @@ def list_works(meta: S.SessionMeta, limit: int = 200) -> list[dict[str, Any]]:
         for p in base.rglob("*"):
             if not p.is_file() or p.name.startswith("."):
                 continue
-            if any(part in _WORK_SKIP_DIRS or part.startswith(".") for part in p.parts):
+            # Judge only the path UNDER the works tree: the sandbox itself may
+            # live below a dot-dir (~/.lunamoth/...), which must not hide it.
+            if any(part in _WORK_SKIP_DIRS or part.startswith(".") for part in p.relative_to(base).parts):
                 continue
             try:
                 st = p.stat()
