@@ -34,7 +34,10 @@ It is the synthesis of three projects — clone them under `reference/`
 - **farion1231/cc-switch** — session/roster ergonomics, remote access.
 
 (History: began as an SCP-079 fan recreation, long since generalized; SCP is
-mentioned only in license/acknowledgements. The default card is LunaMoth 月蛾.)
+mentioned only in license/acknowledgements. The default card is Quinn 小Q,
+the owner-authored digital intern — selected via the card-tag `"default"`
+convention (landing with the cards-one-file wave; until then filename order
+still picks LunaMoth). LunaMoth 月蛾 stays bundled as the flagship example.)
 
 ## Design principles (binding)
 
@@ -91,8 +94,9 @@ uvx ruff check --select F src/lunamoth tests   # lint (unused imports, undefined
   only key (safety quit).
 - README is split EN (`README.md`) / zh (`README.zh-CN.md`) — update BOTH.
 - Design docs live in docs/ (`context-design.md` = the prompt machine,
-  `desktop/design.md` = web/desktop). Work logs/handovers belong in git
-  history and agent memory, not docs/.
+  `desktop/design.md` = web/desktop). Work logs belong in git history
+  and agent memory; ACTIVE cross-machine handovers are the one exception —
+  they live as docs/handover-*.md and are deleted once absorbed.
 
 ## Module map (src/lunamoth/ — domain subpackages)
 
