@@ -28,50 +28,25 @@
 - attach 不唤醒 resting chara；无言到访零痕迹；常驻 chara 一生只招呼一次
   （重开页面不再重放招呼）。UI 配合：resting 做沉睡氛围 + "说话会唤醒它"。
 - works.list 的点目录误杀已修（后端修复，前端无需动作）。
+- **多 key（#10，按 UI 契约原样落地）**：`keys.list` →
+  `[{label, provider, base_url, model, has_key, active}]`（秘密永不回传）；
+  `keys.save {label, provider?, base_url?, api_key?, model?}`（更新省略
+  api_key=保留）；`keys.delete {label}`；`defaults.use_key {label}`；
+  `session.wake` 接受 `key: <label>`（其 model 仅在 wake 未选时填充）。
+  defaults.set 不再抹掉 keys 存储。
+- **`toolpacks.list`（#8/#12）** → `[{name, description, tools,
+  mcp_servers, path}]` —— 唤醒 sheet 真选单可接。
+- **#11 去重语义已定夺**：用户卡只遮蔽**同名同语言的内置卡**（local-first，
+  同 skills），幸存条目带 `shadows: <被遮蔽路径>` 可如实展示；用户卡之间
+  **永不互相遮蔽**（同名各自出现，path 即身份）。前端的「副本」自动改名
+  保留即可（card.duplicate 也会改名）。
 
 ## 待办
 
-1. **多 key 管理**：维护多把命名 key、每 chara 任选 —— Track A 设计中
-   （hermes parity 轨道一并做）。
-2. **`toolpacks.list`**（任务书 §4.G "唤醒时必须能选 toolpack"）：枚举
-   `toolpacks/*.json` 的 RPC（name + description + tools），唤醒 sheet 的
-   输入框变成真选单。Track A 做。
-3. **引擎读取 `extensions.lunamoth.user_name` / `user_persona`**：工坊把
+1. **引擎读取 `extensions.lunamoth.user_name` / `user_persona`**：工坊把
    这两个字段写进卡片，引擎 persona 层目前不读 —— 要让"你是谁"真正进
    prompt，需要 wake/activation 接到 persona 机制。触及 prompt 栈，
    Track A 做，字段语义需 owner 点头。
-
-## 10. 多 key 管理（owner 2026-06-12 点名："我的多key呢？"——从 v2 提级）
-
-維护多把命名 key、任选其一做默认、唤醒时可指定。建议契约（UI 将按此编码）：
-
-- 存储进 `~/.lunamoth/desktop.json`（已 0600）：`"keys": {label: {provider,
-  base_url, api_key, model?}}`。
-- `keys.list {}` → `[{label, provider, base_url, model, has_key, active}]`
-  ——**key 值永不回传**（has_key only，沿用 defaults 的纪律）。
-- `keys.save {label, provider, base_url, api_key?, model?}`（更新时省略
-  api_key = 保留原值）；`keys.delete {label}`；
-- `defaults.use_key {label}` → 把该 key 拷入顶层 defaults（=defaults.set 的
-  字段），回传 public defaults；
-- `session.wake` 增加可选 `key: <label>`，用该 key 的 provider/base_url/
-  api_key 唤醒（wake 未传 model 时用 key 自带 model）。
-
-落地前 UI：设置·模型 只有单 key 表单（现状）；唤醒 sheet 不出现 key 选择。
-
-## 11. 复制卡片的展示语义：`list_cards` 按 name+lang 去重（owner 报的"复制很怪"的根）
-
-现象：复制副本后"卡片位置奇怪移动、原本锁定的卡解锁了"。根因不在写入
-（save_card 会给文件名加 -2 后缀，不覆盖）而在**列表去重**：`list_cards`
-以 `name+lang` 为 key 去重且用户卡目录先扫——同名副本把内置/原卡**顶出
-列表**，看起来就像原卡"被移动并解锁"。前端本轮先用「<name> 副本」自动改名
-绕开同名；但语义问题留给后端定夺：去重 key 改 path？还是保留 name 级
-shadow（用户卡覆盖同名内置卡）作为特性但在 entry 上标注 `shadows: <path>`
-让前端能如实展示？
-
-## 12. `/model`、`toolpacks.list` 重申（owner 2026-06-12 点名："我的每个chara都能改模型呢？"）
-
-#6、#8 仍未落地，owner 已直接催。契约维持 #6/#8 原文；`/model` 落地后
-右侧面板模型弹层即点亮（前端已留好接缝）。
 
 ## v2 / 暂不做（登记免得丢）
 
