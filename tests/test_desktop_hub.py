@@ -214,6 +214,17 @@ def test_cards_draft_invalid_json_is_clear_error_and_no_save(monkeypatch):
     assert not H.user_cards_dir().exists()
 
 
+def test_cards_draft_rejects_parallel_schema(monkeypatch):
+    set_defaults()
+    bad = draft_payload()
+    bad["extra"] = "nope"
+    mock_completion(monkeypatch, json.dumps(bad))
+    err = rpc_error("cards.draft", {"inspiration": "extra field"})
+    assert err["code"] == -32050
+    assert err["data"]["kind"] == "draft_schema"
+    assert "unexpected: extra" in err["data"]["detail"]
+
+
 @pytest.mark.parametrize(
     "svg",
     [

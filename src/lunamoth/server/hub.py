@@ -393,6 +393,18 @@ def _parse_card_draft(raw: str) -> dict[str, Any]:
         ) from exc
     if not isinstance(obj, dict):
         raise _invalid_draft("top-level JSON must be an object")
+    expected = {"name", "description", "first_mes", "world_entries", "seed_goals",
+                "tagline", "theme_color", "avatar_svg"}
+    got = set(obj)
+    if got != expected:
+        missing = ", ".join(sorted(expected - got))
+        extra = ", ".join(sorted(got - expected))
+        parts = []
+        if missing:
+            parts.append(f"missing: {missing}")
+        if extra:
+            parts.append(f"unexpected: {extra}")
+        raise _invalid_draft("draft keys must match the requested schema (" + "; ".join(parts) + ")")
     draft = {
         "name": _string_field(obj, "name"),
         "description": _string_field(obj, "description"),
