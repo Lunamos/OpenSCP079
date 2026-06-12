@@ -292,3 +292,74 @@ def test_card_duplicate_is_distinct_and_never_default():
 
 def test_card_duplicate_missing_is_an_error():
     assert rpc_error("card.duplicate", {"path": "/nope/missing.json"})["code"] == -32035
+
+
+# ---- named keys (webui-needs #10) --------------------------------------------------
+
+def test_keys_roundtrip_never_echoes_secrets():
+    set_defaults()
+    keys = result("keys.save", {"label": "work", "provider": "openrouter",
+                                "base_url": "https://or.example/v1", "api_key": "sk-work-1"})
+    assert keys == [{"label": "work", "provider": "openrouter", "base_url": "https://or.example/v1",
+                     "model": "", "has_key": True, "active": False}]
+    # update without api_key keeps the stored secret
+    keys = result("keys.save", {"label": "work", "model": "deepseek/v4"})
+    assert keys[0]["model"] == "deepseek/v4" and keys[0]["has_key"] is True
+    raw = json.loads(H.desktop_config_path().read_text(encoding="utf-8"))
+    assert raw["keys"]["work"]["api_key"] == "sk-work-1"
+    # a new label without api_key is a visible error
+    assert rpc_error("keys.save", {"label": "empty"})["code"] == -32602
+    # defaults.set must NOT wipe the keys store
+    result("defaults.set", {"model": "other/model"})
+    raw = json.loads(H.desktop_config_path().read_text(encoding="utf-8"))
+    assert raw["keys"]["work"]["api_key"] == "sk-work-1"
+
+
+def test_use_key_activates_and_delete_removes():
+    set_defaults()
+    result("keys.save", {"label": "home", "provider": "openrouter",
+                         "base_url": "https://or.example/v1", "api_key": "sk-home-9", "model": "m/x"})
+    pub = result("defaults.use_key", {"label": "home"})
+    assert pub["has_key"] is True and "api_key" not in pub and pub["model"] == "m/x"
+    assert result("keys.list")[0]["active"] is True
+    result("keys.delete", {"label": "home"})
+    assert result("keys.list") == []
+    assert rpc_error("defaults.use_key", {"label": "home"})["code"] == -32035
+
+
+def test_wake_with_named_key_uses_its_credentials():
+    set_defaults()
+    result("keys.save", {"label": "alt", "provider": "openrouter",
+                         "base_url": "https://alt.example/v1", "api_key": "sk-alt-2", "model": "alt/model"})
+    entry = result("session.wake", {"card": str(H.bundled_cards_dir() / "Quinn.zh.json"), "key": "alt"})
+    cfg = json.loads((S.load_session(entry["name"]).root / "config.json").read_text(encoding="utf-8"))
+    assert cfg["api_key"] == "sk-alt-2" and cfg["base_url"] == "https://alt.example/v1"
+    assert cfg["model"] == "alt/model"  # key's model fills in when wake didn't pick one
+    err = rpc_error("session.wake", {"card": str(H.bundled_cards_dir() / "Quinn.zh.json"), "key": "ghost"})
+    assert err["code"] == -32035
+
+
+# ---- toolpacks.list ----------------------------------------------------------------
+
+def test_toolpacks_list_enumerates_bundled_packs():
+    packs = result("toolpacks.list")
+    names = [p["name"] for p in packs]
+    assert "sandbox" in names
+    sandbox = next(p for p in packs if p["name"] == "sandbox")
+    assert sandbox["tools"] and sandbox["description"]
+
+
+# ---- list_cards shadow semantics (webui-needs #11) ---------------------------------
+
+def test_user_card_shadows_builtin_with_annotation_but_never_other_user_cards():
+    builtin = json.loads((H.bundled_cards_dir() / "Quinn.zh.json").read_text(encoding="utf-8"))
+    deck = H.user_cards_dir()
+    deck.mkdir(parents=True, exist_ok=True)
+    (deck / "my-quinn.zh.json").write_text(json.dumps(builtin, ensure_ascii=False), encoding="utf-8")
+    (deck / "my-quinn-2.zh.json").write_text(json.dumps(builtin, ensure_ascii=False), encoding="utf-8")
+    cards = result("cards.list")
+    same_name = [c for c in cards if c["name"] == builtin["data"]["name"] and c["lang"] == "zh"]
+    # both user files appear; the builtin is hidden but the shadow is declared
+    assert len(same_name) == 2
+    assert all(not c["builtin"] for c in same_name)
+    assert any(c.get("shadows", "").endswith("Quinn.zh.json") for c in same_name)

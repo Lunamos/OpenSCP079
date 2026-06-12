@@ -82,31 +82,115 @@ def user_worlds_dir() -> Path:
 _DEFAULT_FIELDS = ("provider", "base_url", "api_key", "model", "ui_lang", "ui_theme")
 
 
-def load_defaults() -> dict[str, str]:
-    data: dict[str, str] = {}
+def _read_desktop_raw() -> dict[str, Any]:
     try:
         raw = json.loads(desktop_config_path().read_text(encoding="utf-8"))
-        for k in _DEFAULT_FIELDS:
-            if isinstance(raw.get(k), str):
-                data[k] = raw[k]
+        return raw if isinstance(raw, dict) else {}
     except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_desktop_raw(raw: dict[str, Any]) -> None:
+    path = desktop_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)  # holds API keys
+    except OSError:
         pass
-    return data
+
+
+def load_defaults() -> dict[str, str]:
+    raw = _read_desktop_raw()
+    return {k: raw[k] for k in _DEFAULT_FIELDS if isinstance(raw.get(k), str)}
 
 
 def save_defaults(updates: dict[str, str]) -> dict[str, str]:
-    data = load_defaults()
+    # Merge into the RAW file so sibling top-level sections (the named "keys"
+    # store) survive a defaults write.
+    raw = _read_desktop_raw()
     for k in _DEFAULT_FIELDS:
         if k in updates and isinstance(updates[k], str):
-            data[k] = updates[k]
-    path = desktop_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)  # holds an API key
-    except OSError:
-        pass
-    return data
+            raw[k] = updates[k]
+    _write_desktop_raw(raw)
+    return {k: raw[k] for k in _DEFAULT_FIELDS if isinstance(raw.get(k), str)}
+
+
+# ---- named key store (webui-needs #10) -------------------------------------------
+
+def _keys_map(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    keys = raw.get("keys")
+    if not isinstance(keys, dict):
+        return {}
+    return {str(k): v for k, v in keys.items() if isinstance(v, dict)}
+
+
+def list_keys() -> list[dict[str, Any]]:
+    """Named keys with the secret reduced to its presence — values never travel."""
+    raw = _read_desktop_raw()
+    active_key = str(raw.get("api_key") or "")
+    out = []
+    for label, item in sorted(_keys_map(raw).items()):
+        secret = str(item.get("api_key") or "")
+        out.append({
+            "label": label,
+            "provider": str(item.get("provider") or ""),
+            "base_url": str(item.get("base_url") or ""),
+            "model": str(item.get("model") or ""),
+            "has_key": bool(secret),
+            "active": bool(secret) and secret == active_key,
+        })
+    return out
+
+
+def save_key(label: str, provider: str = "", base_url: str = "",
+             api_key: str = "", model: str = "") -> list[dict[str, Any]]:
+    label = str(label or "").strip()
+    if not label:
+        raise RpcError(-32602, "keys.save needs a label")
+    raw = _read_desktop_raw()
+    keys = raw.get("keys") if isinstance(raw.get("keys"), dict) else {}
+    cur = keys.get(label) if isinstance(keys.get(label), dict) else {}
+    item = dict(cur)
+    for field_name, value in (("provider", provider), ("base_url", base_url), ("model", model)):
+        if value:
+            item[field_name] = str(value)
+    if api_key:
+        item["api_key"] = str(api_key)  # omitted on update = keep the stored secret
+    if not item.get("api_key"):
+        raise RpcError(-32602, f"keys.save: '{label}' has no stored api_key — provide one")
+    keys[label] = item
+    raw["keys"] = keys
+    _write_desktop_raw(raw)
+    return list_keys()
+
+
+def delete_key(label: str) -> list[dict[str, Any]]:
+    raw = _read_desktop_raw()
+    keys = raw.get("keys") if isinstance(raw.get("keys"), dict) else {}
+    if label not in keys:
+        raise RpcError(-32035, f"no such key: {label}")
+    keys.pop(label)
+    raw["keys"] = keys
+    _write_desktop_raw(raw)
+    return list_keys()
+
+
+def use_key(label: str) -> dict[str, Any]:
+    """Copy a named key into the top-level defaults (= defaults.set fields)."""
+    item = _keys_map(_read_desktop_raw()).get(str(label or ""))
+    if item is None or not item.get("api_key"):
+        raise RpcError(-32035, f"no such key: {label}")
+    updates = {k: str(item[k]) for k in ("provider", "base_url", "api_key", "model") if item.get(k)}
+    return _public_defaults(save_defaults(updates))
+
+
+def _key_overrides(label: str) -> dict[str, str]:
+    """Resolve a named key for session.wake {key: label}; visible error if absent."""
+    item = _keys_map(_read_desktop_raw()).get(str(label or ""))
+    if item is None or not item.get("api_key"):
+        raise RpcError(-32035, f"no such key: {label}")
+    return {k: str(item[k]) for k in ("provider", "base_url", "api_key", "model") if item.get(k)}
 
 
 def _public_defaults(data: dict[str, str]) -> dict[str, Any]:
@@ -669,9 +753,15 @@ def _card_entry(path: Path, builtin: bool, refs: dict[str, list[str]]) -> dict[s
 
 
 def list_cards() -> list[dict[str, Any]]:
+    """Every deck card. Shadowing semantics (webui-needs #11): a USER card
+    hides only a BUILTIN of the same name+lang (local-first, like skills),
+    and the surviving entry says so via `shadows: <hidden path>`. User cards
+    never hide each other — same-name user files all appear (path is the
+    identity); silent disappearance is what read as 'the locked card moved
+    and unlocked'."""
     refs = _card_sources()
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    user_by_key: dict[str, dict[str, Any]] = {}
     for base, builtin in ((user_cards_dir(), False), (bundled_cards_dir(), True)):
         if not base.is_dir():
             continue
@@ -681,9 +771,15 @@ def list_cards() -> list[dict[str, Any]]:
             if p.stem.startswith("LICENSE"):
                 continue
             entry = _card_entry(p, builtin, refs)
-            if entry and entry["name"] + entry["lang"] not in seen:
-                out.append(entry)
-                seen.add(entry["name"] + entry["lang"])
+            if not entry:
+                continue
+            key = entry["name"] + entry["lang"]
+            if builtin and key in user_by_key:
+                user_by_key[key]["shadows"] = entry["path"]
+                continue
+            if not builtin:
+                user_by_key.setdefault(key, entry)
+            out.append(entry)
     return out
 
 
@@ -1256,7 +1352,8 @@ def session_entry(meta: S.SessionMeta, supervisor: Any | None = None) -> dict[st
 
 
 def wake(card_path: str, name: str = "", isolation: str = "sandbox",
-         model: str = "", toolpack: str = "", embodiment: str = "") -> dict[str, Any]:
+         model: str = "", toolpack: str = "", embodiment: str = "",
+         key: str = "") -> dict[str, Any]:
     """Instantiate a card: create the session, freeze a card copy, write config.
 
     The card describes WHO the chara is; this call decides where it lives
@@ -1272,6 +1369,10 @@ def wake(card_path: str, name: str = "", isolation: str = "sandbox",
             raise RpcError(-32602, f"invalid embodiment {embodiment!r} — expected literal|actor")
     card = CharacterCard.load(card_path)  # validates before any disk writes
     defaults = load_defaults()
+    if key:
+        # A named key (webui-needs #10): its provider/base_url/api_key drive
+        # this chara; its model fills in only when wake didn't pick one.
+        defaults = {**defaults, **_key_overrides(key)}  # wake's `model` param still wins below
     if not (defaults.get("base_url") and defaults.get("api_key")) and defaults.get("provider") != "mock":
         raise RpcError(-32030, "no model configured — set up a provider first")
     session_name = _slug(name or Path(card_path).stem)
@@ -1370,6 +1471,30 @@ def export_session(meta: S.SessionMeta) -> dict[str, Any]:
             if p.is_file():
                 zf.write(p, p.relative_to(meta.root.parent))
     return {"path": str(target)}
+
+
+def list_toolpacks() -> list[dict[str, Any]]:
+    """Bundled tool packs for the wake sheet's picker (webui-needs #8/#12).
+
+    Pure data read of toolpacks/*.json — the server never imports tools/."""
+    base = ROOT / "toolpacks"
+    out: list[dict[str, Any]] = []
+    if not base.is_dir():
+        return out
+    for p in sorted(base.glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _log.warning("unreadable toolpack skipped: %s", p)
+            continue
+        out.append({
+            "name": str(d.get("name") or p.stem),
+            "description": str(d.get("description") or ""),
+            "tools": [str(t) for t in (d.get("tools") or [])],
+            "mcp_servers": [str(x) for x in (d.get("mcp_servers") or [])],
+            "path": str(p),
+        })
+    return out
 
 
 # ---- sandbox reads for the drawer ------------------------------------------------
@@ -1729,7 +1854,20 @@ class HubDispatcher:
                 model=str(p.get("model") or ""),
                 toolpack=str(p.get("toolpack") or ""),
                 embodiment=str(p.get("embodiment") or ""),
+                key=str(p.get("key") or ""),
             )
+        if method == "toolpacks.list":
+            return list_toolpacks()
+        if method == "keys.list":
+            return list_keys()
+        if method == "keys.save":
+            return save_key(str(p.get("label") or ""), provider=str(p.get("provider") or ""),
+                            base_url=str(p.get("base_url") or ""), api_key=str(p.get("api_key") or ""),
+                            model=str(p.get("model") or ""))
+        if method == "keys.delete":
+            return delete_key(str(p.get("label") or ""))
+        if method == "defaults.use_key":
+            return use_key(str(p.get("label") or ""))
         if method == "chara.extras":
             return chara_extras(self._meta(p))
         if method == "works.list":
