@@ -922,7 +922,7 @@ def wake(card_path: str, name: str = "", isolation: str = "sandbox",
     return session_entry(meta)
 
 
-def start_daemon(meta: S.SessionMeta, patience: float = 2.0) -> bool:
+def start_daemon(meta: S.SessionMeta, patience: float | None = None) -> bool:
     """Spawn the detached background life (mirror of front/cli._start_daemon)."""
     if meta.daemon_pid():
         return True
@@ -931,8 +931,11 @@ def start_daemon(meta: S.SessionMeta, patience: float = 2.0) -> bool:
     env = {**os.environ, **meta.env()}
     env.setdefault("LUNAMOTH_PY_BACKEND", _ISOLATION_TO_BACKEND[meta.isolation])
     log = meta.daemon_log.open("ab")
+    argv = [sys.executable, "-m", "lunamoth.front.terminal"]
+    if patience is not None:
+        argv += ["--patience", str(patience)]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "lunamoth.front.terminal", "--patience", str(patience)],
+        argv,
         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, env=env, cwd=str(ROOT),
     )

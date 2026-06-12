@@ -60,6 +60,7 @@ class DummyHandle:
             rest_until=0.0,
             quiet=300,
             tempo=1.0,
+            patience=600.0,
             embodiment="literal",
             context_tokens=0,
             context_max=100,

@@ -55,7 +55,7 @@ def _needs_setup(meta: S.SessionMeta) -> bool:
 
 # ---- background daemon (persistent agents) ---------------------------------
 
-def _start_daemon(meta: S.SessionMeta, patience: float = 2.0) -> bool:
+def _start_daemon(meta: S.SessionMeta, patience: float | None = None) -> bool:
     """Spawn a detached background process where this agent lives on its own.
 
     The agent keeps thinking / creating in its workspace with no terminal
@@ -67,8 +67,11 @@ def _start_daemon(meta: S.SessionMeta, patience: float = 2.0) -> bool:
     env = {**os.environ, **meta.env()}
     env.setdefault("LUNAMOTH_PY_BACKEND", _ISOLATION_TO_BACKEND[meta.isolation])
     log = meta.daemon_log.open("ab")
+    argv = [sys.executable, "-m", "lunamoth.front.terminal"]
+    if patience is not None:
+        argv += ["--patience", str(patience)]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "lunamoth.front.terminal", "--patience", str(patience)],
+        argv,
         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, env=env, cwd=str(APP_DIR),
     )
@@ -111,7 +114,9 @@ def _launch_tui(meta: S.SessionMeta, args: argparse.Namespace) -> int:
         from .wizard import run_wizard
 
         run_wizard()
-    argv = [sys.argv[0], "--patience", str(args.patience)]
+    argv = [sys.argv[0]]
+    if args.patience is not None:
+        argv += ["--patience", str(args.patience)]
     # The interaction mode lives in the chara's own config; pass it down only when
     # the operator overrides it for this attach (--mode, or the legacy --no-forever).
     mode = args.mode or ("chat" if getattr(args, "no_forever", False) else "")
@@ -554,8 +559,8 @@ def _maybe_update_hint() -> None:
 
 
 def _add_tui_flags(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0,
-                   help="pause between the chara's spontaneous cycles, in seconds")
+    p.add_argument("--patience", "--cooldown", dest="patience", type=float, default=None,
+                   help="override pause between the chara's spontaneous cycles, in seconds")
     p.add_argument("--mode", choices=["live", "chat"], default="",
                    help="override the chara's interaction mode for this attach (live: keeps creating while you watch; chat: only replies)")
     p.add_argument("--no-forever", action="store_true", help=argparse.SUPPRESS)  # pre-rename alias for --mode chat
@@ -589,11 +594,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("start", help="let an agent live in the background; --all for every agent")
     sp.add_argument("name", nargs="?")
     sp.add_argument("--all", action="store_true", help="start every configured agent")
-    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0)
+    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=None)
     sp.set_defaults(func=cmd_start)
 
     sp = sub.add_parser("start-all", help="start every configured agent in the background (e.g. after a reboot)")
-    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0)
+    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=None)
     sp.set_defaults(func=lambda a: (_start_all() or 0))
 
     sp = sub.add_parser("stop", help="stop an agent's background loop; --all to stop every agent")
@@ -623,8 +628,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("gateway", help="run one session's configured messaging adapters")
     sp.add_argument("name")
-    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=2.0,
-                    help="pause between the chara's spontaneous cycles, in seconds")
+    sp.add_argument("--patience", "--cooldown", dest="patience", type=float, default=None,
+                    help="override pause between the chara's spontaneous cycles, in seconds")
     sp.add_argument("--debug", action="store_true", help="DEBUG-level diagnostics in the chara's sandbox/logs/")
     sp.set_defaults(func=cmd_gateway)
 
