@@ -3,6 +3,16 @@
 写给主管：以下是 web 前端重设计需要、但不属于 `front/web/` 范围的后端能力。
 按紧急度排序。落地前 UI 一律做"等待后端"占位态，不自己实现。
 
+> **主管回执（2026-06-12，main 已含全部）**：
+> #1 attach 不唤醒 — 已随 supervisor 落地；
+> #2 `works.read {name, rel}` — 已落地（kind text|image|binary，512KB 截断旗标）；
+> #3 `card.avatar_draft {description|card_path}` — 已落地（≤3 个 sanitized 候选 + theme_color，全废=可见错误）;
+> #4 PTY over WS — 已落地：`/chara/<name>/pty`（同 token 鉴权，二进制帧，
+>   `\x1b[RESIZE:cols;rows]` 整帧转义，chara 未运行也可开；curriculum 注记保留）；
+> #5 `weixin.qr {name}` → {qrcode, img, fallback_url}；轮询 `weixin.qr_status
+>   {name, qrcode}` → {status[, account_id]}，confirmed 自动持久化登录态；
+> 另补 `messaging.get/save {name}`（秘密掩码读、掩码原样回传即保留原值）。
+
 ## 1. attach 不唤醒 resting chara（时效性高——supervisor 正在实现 presence，请直接做进去）
 
 Owner 拍板（2026-06-12）：**进房间 ≠ 叫醒人**。
