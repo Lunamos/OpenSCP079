@@ -150,7 +150,9 @@ zero internal deps; `obs/` imports only `config`.
   from diagnostics; never merge them). transcript/audit/logs = three records,
   three jobs.
 - `session/` — `sessions.py` (named charas under ~/.lunamoth/sessions/<name>/;
-  `SessionMeta.env()` is the activation interface), `settings.py`, `cleanup.py`.
+  `SessionMeta.env()` is the activation interface), `settings.py`, `cleanup.py`,
+  `isolation.py` (stdlib-only OS jail builders — shared by tools/runner and the
+  supervisor's PTY shell; `interactive_shell_argv` never degrades to dir trust).
 - `presence/` — attach/detach awareness + `/mode live|chat`.
 - `server/` — the remote/desktop gateway (imports protocol+session+content, never
   core/tools directly): `dispatch.py` (per-session JSON-RPC over CharaHandle),
@@ -159,7 +161,9 @@ zero internal deps; `obs/` imports only `config`.
   supervisor child/gateway state; reads session dirs + transcript SQLite directly —
   one process = one activated session, so the hub NEVER hosts an agent),
   `supervisor.py` (lunamothd: long-lived `serve --stdio` child registry, gateway
-  supervision, seq/rejoin, life.state, idle driving), `desktop.py` (thin
+  supervision, seq/rejoin, life.state, idle driving, `/chara/<name>/pty` operator
+  shell — audited, not a driver), `pty.py` (stdlib PtyBridge: a shell inside the
+  chara's jail behind a pty, streamed as binary WS frames), `desktop.py` (thin
   foreground/daemon entry for static HTTP + WS routing).
 - `front/` — ALL frontends; the only textual/rich importers:
   - `cli.py` — the `lunamoth` command (roster default; new/ls/attach/start/stop/rm/

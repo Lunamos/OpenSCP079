@@ -14,6 +14,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -27,8 +28,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from ..obs.audit import AuditLog
+from ..session import isolation as I
 from ..session import sessions as S
 from . import hub as H
+from .pty import PtyBridge
 from .ws import _WSSink, _close_ws, _path_from_ws, _recv_text, query_auth_ok
 
 _log = logging.getLogger("lunamoth.server.supervisor")
@@ -37,6 +41,11 @@ APP_DIR = Path(__file__).resolve().parents[3]
 WEB_DIR = Path(__file__).resolve().parents[1] / "front" / "web"
 UPLOAD_MAX = 8 * 1024 * 1024
 ISOLATION_TO_BACKEND = {"dir": "local", "sandbox": "sandbox", "docker": "docker"}
+
+# Whole-frame resize escape consumed server-side by the PTY endpoint
+# (hermes shape): \x1b[RESIZE:<cols>;<rows>] — full-match only.
+_PTY_RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+_PTY_READ_TIMEOUT = 0.2
 
 
 # ---- small, unit-testable primitives ---------------------------------------
@@ -746,6 +755,7 @@ class Supervisor:
         self.token = token
         self.charas: dict[str, CharaChild] = {}
         self.gateways: dict[str, GatewayChild] = {}
+        self._pty_bridges: set[PtyBridge] = set()
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._shutdown = asyncio.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -855,7 +865,11 @@ class Supervisor:
         if route in ("", "/", "/hub"):
             await self._handle_hub(ws)
         elif route.startswith("/chara/"):
-            await self._handle_chara(ws, route[len("/chara/"):].strip("/"))
+            rest = route[len("/chara/"):].strip("/")
+            if rest.endswith("/pty"):
+                await self._handle_pty(ws, rest[: -len("/pty")].strip("/"), path)
+            else:
+                await self._handle_chara(ws, rest)
         else:
             await _close_ws(ws, 4404, "unknown endpoint")
 
@@ -930,9 +944,99 @@ class Supervisor:
             await child.disconnect_driver(driver)
             await _close_ws(ws)
 
+    async def _handle_pty(self, ws: Any, name: str, path: str) -> None:
+        """An operator shell inside the chara's isolation jail, over one WS.
+
+        The shell targets the chara's HOME (its sandbox workspace), not the
+        agent: no ensure_started() — the PTY works while the chara child is
+        stopped or resting, and a PTY is NOT a driver (no rejoin/seq).
+        """
+        # OPEN QUESTION (curriculum): should a chara be able to sense that an
+        # operator shell entered its home? For now the chara is NOT notified
+        # and the transcript is untouched — the audit trail is the only record.
+        meta = S.load_session(name)
+        if meta is None:
+            await _close_ws(ws, 4404, "no such chara")
+            return
+        qs = parse_qs(urlsplit(path).query)
+
+        def _dim(key: str, default: int) -> int:
+            try:
+                return int((qs.get(key) or [default])[0])
+            except (TypeError, ValueError):
+                return default
+
+        workspace = meta.sandbox_dir / "workspace"
+        allow_network, writable = I.runtime_permissions(meta.sandbox_dir)
+        audit = AuditLog(meta.sandbox_dir / "logs" / "audit.jsonl")
+        try:
+            argv, cwd, env = I.interactive_shell_argv(
+                meta.isolation,
+                workspace,
+                allow_network=allow_network,
+                writable_paths=writable,
+            )
+            bridge = PtyBridge.spawn(argv, cwd=cwd, env=env, cols=_dim("cols", 80), rows=_dim("rows", 24))
+        except (I.JailUnavailableError, OSError) as exc:
+            # No degrade, no silent fallback: the operator sees WHY in the
+            # terminal, then the socket closes with an error code.
+            _log.warning("pty for %s failed to start: %s", name, exc)
+            with contextlib.suppress(Exception):
+                await ws.send(f"\r\nshell unavailable: {exc}\r\n")
+            await _close_ws(ws, 1011, str(exc)[:120])
+            return
+        self._pty_bridges.add(bridge)
+        audit.write("pty_open", chara=name, isolation=meta.isolation, pid=bridge.pid)
+        _log.info("pty open for %s (isolation=%s, pid=%d)", name, meta.isolation, bridge.pid)
+        loop = asyncio.get_running_loop()
+
+        async def pump_pty_to_ws() -> None:
+            while True:
+                chunk = await loop.run_in_executor(None, bridge.read, _PTY_READ_TIMEOUT)
+                if chunk is None:  # EOF: child exited
+                    await _close_ws(ws, 1000, "shell exited")
+                    return
+                if not chunk:
+                    continue
+                try:
+                    await ws.send(chunk)  # binary frame: raw bytes, never JSON
+                except Exception:
+                    return
+
+        reader = asyncio.create_task(pump_pty_to_ws(), name=f"pty-{name}-reader")
+        try:
+            while True:
+                try:
+                    msg = await ws.recv()
+                except Exception:
+                    break
+                raw = msg.encode("utf-8") if isinstance(msg, str) else bytes(msg)
+                if not raw:
+                    continue
+                match = _PTY_RESIZE_RE.fullmatch(raw)
+                if match:  # consumed server-side, never written to the shell
+                    bridge.resize(int(match.group(1)), int(match.group(2)))
+                    continue
+                bridge.write(raw)
+        finally:
+            reader.cancel()
+            # CancelledError is a BaseException: plain suppress(Exception)
+            # would let it abort the rest of this cleanup.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await reader
+            bridge.close()
+            self._pty_bridges.discard(bridge)
+            audit.write("pty_close", chara=name, pid=bridge.pid, exit=bridge.returncode)
+            _log.info("pty closed for %s (pid=%d, exit=%s)", name, bridge.pid, bridge.returncode)
+            await _close_ws(ws)
+
     async def shutdown(self) -> None:
         if self._httpd is not None:
             self._httpd.shutdown()
+        for bridge in list(self._pty_bridges):
+            with contextlib.suppress(Exception):
+                bridge.close()
+        self._pty_bridges.clear()
         for gw in list(self.gateways.values()):
             with contextlib.suppress(Exception):
                 await gw.stop(persist=False)
