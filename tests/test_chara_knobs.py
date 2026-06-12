@@ -159,9 +159,12 @@ def test_bundled_actor_bridge_uses_card_language_and_macros(agent_factory, tmp_p
     assert "这场化身的后台" in blob
 
 
-def test_embodiment_command_persists_and_explains(agent_factory):
+def test_embodiment_command_persists_and_explains(agent_factory, monkeypatch):
     from lunamoth.core import commands
 
+    # The set-reply explanation follows the card language, and the bundled
+    # default card follows the host locale — pin it so the assert is portable.
+    monkeypatch.setenv("LUNAMOTH_LANG", "en")
     a = agent_factory()
     s = a.make_session()
     reply = commands.execute(a, s, "/embodiment actor")
