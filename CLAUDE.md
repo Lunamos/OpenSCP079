@@ -64,7 +64,7 @@ still picks LunaMoth). LunaMoth 月蛾 stays bundled as the flagship example.)
 uv sync --extra dev --extra server   # plain `uv sync` REMOVES pytest — always use extras
 uv run lunamoth            # the CLI (editable; reflects the working tree)
 uv run lunamoth --plain    # legacy plain terminal (native cursor + IME; good for CJK)
-uv run lunamoth desktop    # web/desktop hub (serves front/web + per-chara gateways)
+uv run lunamoth desktop    # web/desktop hub; --daemon = resident lunamothd (stop/status: `lunamoth daemon`)
 uv run lunamoth serve NAME --stdio   # one chara over JSON-RPC (wire format)
 uv run lunamoth run NAME -p "hi" [--stream-json]   # headless one-shot
 uv run python -m pytest -q # tests live in tests/, confined via pyproject testpaths
@@ -159,9 +159,12 @@ zero internal deps; `obs/` imports only `config`.
   foreground/daemon entry for static HTTP + WS routing).
 - `front/` — ALL frontends; the only textual/rich importers:
   - `cli.py` — the `lunamoth` command (roster default; new/ls/attach/start/stop/rm/
-    setup/update/doctor/run/serve/desktop; daemon helpers).
-  - `tui/` — the split TUI (app.py + welcome.py): character stream / operator
-    console / spotlight panel. Steady caret. Renders protocol events in
+    setup/update/doctor/run/serve/desktop/daemon; `start` delegates to a live
+    lunamothd).
+  - `tui/` — FROZEN (owner decision 2026-06-12: crash fixes only, no new
+    features; web(=Electron) is the product face, terminal.py stays as the
+    daemon driver). The split TUI (app.py + welcome.py): character stream /
+    operator console / spotlight panel. Steady caret. Renders protocol events in
     `_handle_event`; spontaneous cycles gated by quiet window + rest_until.
   - `terminal.py` — plain-terminal loop; also what the background daemon runs.
   - `roster.py` — the launcher. Compact block wordmark (do NOT switch to the wide
@@ -171,8 +174,8 @@ zero internal deps; `obs/` imports only `config`.
   - `web/` — the desktop renderer (no build step: index.html/style.css/i18n.js/
     rpc.js/app.js), a pure protocol client served by `lunamoth desktop`. Design:
     `docs/archive/design.md`. UI chrome bilingual zh/en + light/dark; a chara's
-    words stay in the card's language. Idle driving MUST keep terminal.py's
-    gating (quiet window + rest_until) or it burns tokens nonstop.
+    words stay in the card's language. Idle driving is SERVER-SIDE only
+    (supervisor.py) — web clients render life.state and must never drive idle.
 
 Content (gitignore-allowlisted): `characters/` `worlds/` `toolpacks/` `themes/`.
 
@@ -203,10 +206,13 @@ global `~/.lunamoth/rules.md`.
 - A **chara** is persistent: daemon via `start`/`start-all`, attach/detach.
   Presence is a fact (`user_present`); `/mode live|chat` is how it behaves
   while watched.
-- **Its own pace**: `patience` (seconds between spontaneous cycles),
-  `/quiet` (engagement: it sets work aside while you talk, resumes after
-  N s of silence), the `rest` tool (it chooses its next wake, 1–120min; your
-  message always wakes it). Idle ticks are user messages carrying ONLY a
+- **Its own pace**: `patience` (seconds between spontaneous cycles —
+  `Settings.patience`, default 600, card hook `extensions.lunamoth.patience`,
+  `/patience`; precedence like tempo. NEVER reintroduce tiny defaults: a 2 s
+  daemon default once burned a real key's daily limit), `/quiet` (engagement:
+  it sets work aside while you talk, resumes after N s of silence), the `rest`
+  tool (it chooses its next wake, 1–120min; your message always wakes it —
+  but ATTACH never does: entering the room is a presence fact, not a wake). Idle ticks are user messages carrying ONLY a
   wall-clock timestamp (ephemeral, in_context=False — the rules layer
   documents the convention); long silences get one gap note; day-level date
   rides the env facts.
@@ -229,10 +235,10 @@ global `~/.lunamoth/rules.md`.
 ## Roadmap (organized by audience; ordered within each)
 
 **A. For OC creators (inspiration → living chara, fast)**
-1. **AI-assisted card creation** in the desktop deck: prose inspiration → draft
-   card (persona, greeting, world entries, seed goals) + a small generated SVG
-   avatar + theme color — every field user-editable before save; the human
-   keeps full authorship. (The web deck's create flow is the seed.)
+1. **AI-assisted card creation** — SHIPPED in the desktop deck (cards.draft:
+   prose inspiration → editable card + sanitized SVG avatar + theme color);
+   iterate per `docs/webui-redesign-0612.md` (studio as blur modal, names and
+   user persona on top, editable avatar).
 2. Card/persona market: `lunamoth-pack.json` + git-repo index (Claude Code
    marketplace model); ST PNG import already works.
 
@@ -253,10 +259,13 @@ global `~/.lunamoth/rules.md`.
 
 **C. For developers / agent users**
 1. Declarative tool registry (hermes-style `tools/registry.py`, builtin/ split).
-2. Messaging adapters: Telegram first (AstrBot Platform pattern; deliver the
-   say channel only — `speak` is already the seam). Personal WeChat = ban risk,
-   opt-in only; prefer Official Account / WeChat Work.
-3. Remote TUI client over the gateway (`--connect`); Electron shell last
-   (web renderer already exists).
+2. Messaging adapters — SHIPPED: WeCom (callback server), personal WeChat
+   over Tencent's OFFICIAL iLink/ClawBot API (QR login, no ban risk, no public
+   callback), QQ as OneBot v11 forward-WS client to user-run NapCat; all
+   say-channel-only behind `messaging.Adapter`, supervised by lunamothd.
+   None live-tested with real credentials yet. NEXT: Telegram (long-poll,
+   trivial after qq.py).
+3. Remote TUI client over the gateway (`--connect`). Electron shell SHIPPED
+   (apps/desktop: thin spawn-and-load shell, focus-aware say notifications).
 4. hermes leftovers in core/llm.py: stream stall detection, tool-call args
    repair, parallel tool execution.
