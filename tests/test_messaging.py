@@ -194,9 +194,14 @@ class FlakyAdapter(FakeAdapter):
 
 @pytest.fixture
 def fast_send_retry(monkeypatch):
+    import logging
+
     import lunamoth.messaging.gateway as gw_mod
 
     monkeypatch.setattr(gw_mod, "_SEND_RETRY_DELAY", 0.01)
+    # obs.setup_logging (run by sibling tests) cuts propagation on "lunamoth";
+    # restore it so caplog can see gateway records regardless of test order.
+    monkeypatch.setattr(logging.getLogger("lunamoth"), "propagate", True)
 
 
 def test_send_failure_retries_once_then_delivers(fast_send_retry):
