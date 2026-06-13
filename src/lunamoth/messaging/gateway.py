@@ -19,6 +19,7 @@ from .telegram import TelegramAdapter
 from .text import split_text
 from .wecom import WeComAdapter
 from .weixin import WeixinAdapter
+from .weixinpad import WeixinPadAdapter
 
 _log = logging.getLogger("lunamoth.messaging.gateway")
 
@@ -104,6 +105,8 @@ def make_adapters(config: dict[str, Any]) -> list[Adapter]:
             out.append(WeComAdapter(adapter_config))
         elif name == "weixin":
             out.append(WeixinAdapter(adapter_config))
+        elif name == "weixinpad":
+            out.append(WeixinPadAdapter(adapter_config))
         elif name == "qq":
             out.append(QQAdapter(adapter_config))
         elif name == "telegram":
