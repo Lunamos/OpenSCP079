@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from lunamoth.server.supervisor import (
     DriverSlot,
@@ -10,7 +11,12 @@ from lunamoth.server.supervisor import (
     GatewayInfo,
     IdleGate,
     LifeState,
+    ResourceCanary,
     RestartBackoff,
+    _Driver,
+    format_shutdown_context,
+    log_memory_usage,
+    snapshot_shutdown_context,
 )
 
 
@@ -564,3 +570,108 @@ def test_set_autonomy_and_the_board_agree_via_mode(tmp_path, monkeypatch):
     call("chara.set_autonomy", {"name": meta.name, "on": True})
     assert Supervisor.is_autonomous(meta) is True
     assert call("sessions.list", {})[0]["paused"] is False   # board: autonomy on
+
+
+# ---- #28 shutdown forensics + resource canary -------------------------------
+
+def test_snapshot_shutdown_context_names_signal_and_pid():
+    import signal as _sig
+
+    ctx = snapshot_shutdown_context(_sig.SIGTERM)
+    assert ctx["signal"] == "SIGTERM"
+    assert ctx["signal_num"] == int(_sig.SIGTERM)
+    assert ctx["pid"] > 0 and ctx["ppid"] >= 0
+    assert "under_systemd" in ctx
+    # No signal ⇒ UNKNOWN, never raises.
+    assert snapshot_shutdown_context(None)["signal"] == "UNKNOWN"
+
+
+def test_format_shutdown_context_is_one_scannable_line():
+    line = format_shutdown_context({
+        "signal": "SIGINT",
+        "under_systemd": False,
+        "parent": {"pid": 42, "name": "launchd", "cmdline": "/sbin/launchd"},
+        "rss_mb": 123,
+        "loadavg_1m": 0.5,
+    })
+    assert "\n" not in line
+    assert "signal=SIGINT" in line and "parent_pid=42" in line
+    assert "rss=123MB" in line and "loadavg_1m=0.5" in line
+
+
+class _CaptureHandler(logging.Handler):
+    """Capture lunamoth.server.supervisor records directly.
+
+    The "lunamoth" logger sets propagate=False once setup_logging runs, so
+    pytest's caplog (which hangs off the root) can miss our lines under a full
+    suite run. Attaching our own handler to the exact logger is propagation-
+    independent.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.messages: list[str] = []
+
+    def emit(self, record):  # noqa: ANN001
+        self.messages.append(record.getMessage())
+
+
+def _capture_supervisor_logs():
+    logger = logging.getLogger("lunamoth.server.supervisor")
+    handler = _CaptureHandler()
+    logger.addHandler(handler)
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    return logger, handler, old_level
+
+
+def test_log_memory_usage_emits_memory_line():
+    logger, handler, old = _capture_supervisor_logs()
+    try:
+        log_memory_usage("baseline", start_time=None)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old)
+    assert any("[MEMORY]" in m and "baseline" in m for m in handler.messages)
+
+
+def test_resource_canary_start_baseline_and_stop():
+    logger, handler, old = _capture_supervisor_logs()
+    try:
+        canary = ResourceCanary(interval=3600.0)  # never fires during the test
+        started = canary.start()
+        # On a platform without resource introspection start() returns False —
+        # either way it must never raise and stop() must be safe.
+        canary.stop(timeout=1.0)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old)
+    if started:
+        assert any("baseline" in m for m in handler.messages)
+        assert any("shutdown" in m for m in handler.messages)
+    # Double-stop is harmless.
+    canary.stop(timeout=0.1)
+
+
+# ---- #29 slow-client backpressure: _Driver bounded send ---------------------
+
+def test_driver_send_drops_on_stalled_client_without_blocking():
+    """A ws.send that never completes must time out, not wedge the pump."""
+    import lunamoth.server.supervisor as SUP
+
+    class StalledWS:
+        async def send(self, raw):  # noqa: ANN001
+            await asyncio.sleep(3600)  # never returns: stalled browser
+
+    async def go():
+        # Shrink the timeout so the test is fast; the production constant is 10s.
+        old = SUP._DRIVER_SEND_TIMEOUT_SECONDS
+        SUP._DRIVER_SEND_TIMEOUT_SECONDS = 0.05
+        try:
+            d = _Driver(StalledWS())
+            ok = await d.send({"method": "event"})
+            assert ok is False  # dropped, not hung
+        finally:
+            SUP._DRIVER_SEND_TIMEOUT_SECONDS = old
+
+    asyncio.run(asyncio.wait_for(go(), timeout=5.0))

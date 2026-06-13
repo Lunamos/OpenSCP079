@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import dataclasses
 import functools
+import gc
 import http.server
 import json
 import logging
@@ -46,6 +47,195 @@ ISOLATION_TO_BACKEND = {"dir": "local", "sandbox": "sandbox", "docker": "docker"
 # (hermes shape): \x1b[RESIZE:<cols>;<rows>] — full-match only.
 _PTY_RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_TIMEOUT = 0.2
+
+
+# ---- shutdown forensics + resource canary (#28) ----------------------------
+#
+# A week-long lunamothd that leaks (cached children, MCP connections, tool
+# schemas, transcript handles) is invisible until the OS OOM-kills it, and
+# when it dies the daemon log says nothing about *why*. Two small, never-throw
+# instruments — ported in shape from hermes' gateway/memory_monitor.py and
+# gateway/shutdown_forensics.py, kept stdlib-only and trimmed to our needs:
+#
+#   * a 5-minute `[MEMORY] rss/gc/threads/uptime` line on a daemon thread, so a
+#     slow climb is grep-able after the fact, and
+#   * a fast (<10ms), non-blocking snapshot of who/what triggered shutdown,
+#     logged synchronously from the signal path.
+
+_BYTES_TO_MB = 1024 * 1024
+_MEMORY_INTERVAL_SECONDS = 300.0
+
+
+def _rss_mb() -> int | None:
+    """Current process RSS in MB, or None if introspection is unavailable.
+
+    Uses stdlib ``resource`` (Linux/macOS); ``ru_maxrss`` is bytes on macOS,
+    KB on Linux. Never raises.
+    """
+    try:
+        import resource
+
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return int(maxrss / _BYTES_TO_MB)
+        return int(maxrss / 1024)
+    except Exception:
+        return None
+
+
+def log_memory_usage(prefix: str = "", *, start_time: float | None = None) -> None:
+    """Emit a grep-friendly ``[MEMORY] ...`` line. Safe from any thread, never raises."""
+    rss = _rss_mb()
+    uptime = int(time.monotonic() - start_time) if start_time else 0
+    try:
+        gc_counts = gc.get_count()
+    except Exception:
+        gc_counts = (0, 0, 0)
+    try:
+        thread_count = threading.active_count()
+    except Exception:
+        thread_count = 0
+    tag = f"{prefix} " if prefix else ""
+    rss_str = "unavailable" if rss is None else f"{rss}MB"
+    _log.info("[MEMORY] %srss=%s gc=%s threads=%d uptime=%ds", tag, rss_str, gc_counts, thread_count, uptime)
+
+
+class ResourceCanary:
+    """Periodic `[MEMORY]` logger on a daemon thread (leak detection).
+
+    Daemon thread → never blocks process exit; every iteration is wrapped so a
+    failed log can never throw into the agent/serve path. A baseline line is
+    emitted on start and a final ``shutdown`` line on stop.
+    """
+
+    def __init__(self, interval: float = _MEMORY_INTERVAL_SECONDS) -> None:
+        self.interval = float(interval)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_time: float | None = None
+
+    def start(self) -> bool:
+        if self._thread is not None and self._thread.is_alive():
+            return False
+        if _rss_mb() is None:
+            _log.warning("[MEMORY] resource canary unavailable (no resource.getrusage) — skipping")
+            return False
+        self._start_time = time.monotonic()
+        self._stop.clear()
+        log_memory_usage("baseline", start_time=self._start_time)
+        self._thread = threading.Thread(target=self._loop, name="lunamothd-memory-canary", daemon=True)
+        self._thread.start()
+        _log.info("[MEMORY] resource canary started (interval=%ds)", int(self.interval))
+        return True
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                log_memory_usage(start_time=self._start_time)
+            except Exception:
+                _log.debug("memory canary iteration failed", exc_info=True)
+
+    def stop(self, timeout: float = 2.0) -> None:
+        thread = self._thread
+        if thread is None:
+            return
+        with contextlib.suppress(Exception):
+            log_memory_usage("shutdown", start_time=self._start_time)
+        self._stop.set()
+        self._thread = None
+        with contextlib.suppress(Exception):
+            thread.join(timeout=timeout)
+
+
+def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
+    """Fast (<10ms), never-raising snapshot of who/what asked us to shut down.
+
+    Captures the signal name/number, our pid/ppid + parent process info
+    (cmdline on Linux via /proc), whether systemd is our parent, RSS and the
+    1-min load average. Pure stdlib; nothing here blocks on a subprocess.
+    """
+    pid = os.getpid()
+    ppid = os.getppid()
+    ctx: dict[str, Any] = {
+        "ts": time.time(),
+        "signal": _signal_name(received_signal),
+        "signal_num": int(received_signal) if received_signal is not None else None,
+        "pid": pid,
+        "ppid": ppid,
+    }
+    parent = _proc_summary(ppid)
+    if parent:
+        ctx["parent"] = parent
+    invocation_id = os.environ.get("INVOCATION_ID")
+    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    if invocation_id:
+        ctx["systemd_invocation_id"] = invocation_id
+    rss = _rss_mb()
+    if rss is not None:
+        ctx["rss_mb"] = rss
+    try:
+        ctx["loadavg_1m"] = round(os.getloadavg()[0], 2)
+    except (OSError, AttributeError):
+        pass
+    return ctx
+
+
+_SIGNAL_NAME_BY_NUM: dict[int, str] = {}
+for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"):
+    _val = getattr(signal, _name, None)
+    if _val is not None:
+        _SIGNAL_NAME_BY_NUM[int(_val)] = _name
+
+
+def _signal_name(sig: Any) -> str:
+    if sig is None:
+        return "UNKNOWN"
+    try:
+        sig_int = int(sig)
+    except (TypeError, ValueError):
+        return str(sig)
+    return _SIGNAL_NAME_BY_NUM.get(sig_int, f"signal#{sig_int}")
+
+
+def _proc_summary(pid: int) -> dict[str, Any]:
+    """Compact /proc/<pid> snapshot (Linux only); empty dict elsewhere. Never raises."""
+    if pid <= 0 or not sys.platform.startswith("linux"):
+        return {}
+    summary: dict[str, Any] = {"pid": pid}
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("Name:"):
+                    summary["name"] = line.split(":", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            data = fh.read()
+        if data:
+            summary["cmdline"] = data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()[:300]
+    except OSError:
+        pass
+    return summary
+
+
+def format_shutdown_context(ctx: dict[str, Any]) -> str:
+    """Render a shutdown context dict as one scannable log line."""
+    parent = ctx.get("parent") or {}
+    parts = [
+        f"signal={ctx.get('signal', '?')}",
+        f"under_systemd={'yes' if ctx.get('under_systemd') else 'no'}",
+        f"parent_pid={parent.get('pid', '?')}",
+        f"parent_name={parent.get('name', '?')}",
+    ]
+    if "rss_mb" in ctx:
+        parts.append(f"rss={ctx['rss_mb']}MB")
+    if "loadavg_1m" in ctx:
+        parts.append(f"loadavg_1m={ctx['loadavg_1m']}")
+    if parent.get("cmdline"):
+        parts.append(f"parent_cmdline={parent['cmdline']!r}")
+    return " ".join(parts)
 
 
 # ---- small, unit-testable primitives ---------------------------------------
@@ -292,6 +482,16 @@ class DriverSlot:
             self.current = None
 
 
+# A stalled browser must not wedge the child's stdout pump: the supervisor
+# reads the child's stdout on the loop and forwards each frame to the driver
+# inline, so a `ws.send` that blocks on a slow client backs pressure all the
+# way down into the agent (its stdout pipe fills, then it blocks on write).
+# The FrameRing already lets a client recover missed frames on rejoin, so we
+# bound the per-frame send: on timeout we drop the driver rather than freeze
+# the pump — the slow client simply rejoins and replays from its last seq.
+_DRIVER_SEND_TIMEOUT_SECONDS = 10.0
+
+
 class _Driver:
     def __init__(self, ws: Any) -> None:
         self.ws = ws
@@ -305,9 +505,11 @@ class _Driver:
             return False
         async with self.lock:
             try:
-                await self.ws.send(raw)
+                await asyncio.wait_for(self.ws.send(raw), timeout=_DRIVER_SEND_TIMEOUT_SECONDS)
                 return True
             except Exception:
+                # Timeout or transport error ⇒ client is gone/wedged. Caller
+                # drops the driver; the client recovers via FrameRing rejoin.
                 return False
 
     async def close_superseded(self) -> None:
@@ -968,6 +1170,9 @@ class Supervisor:
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._shutdown = asyncio.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
+        self._canary = ResourceCanary()
+        self._shutdown_ctx: dict[str, Any] | None = None
+        self._installed_signals: list[int] = []
 
     def child(self, name: str) -> CharaChild:
         meta = S.load_session(name)
@@ -1099,6 +1304,8 @@ class Supervisor:
             print(f"error: renderer assets missing at {WEB_DIR}", file=sys.stderr)
             return 1
         self.loop = asyncio.get_running_loop()
+        self._install_signal_handlers()
+        self._canary.start()
         self._httpd = start_http(self.host, self.http_port, self.token, self)
         url = f"http://{self.host}:{self.http_port}/#token={self.token}&ws={self.ws_port}"
         print(f"LunaMoth desktop: {url}", file=sys.stderr, flush=True)
@@ -1308,7 +1515,44 @@ class Supervisor:
             _log.info("pty closed for %s (pid=%d, exit=%s)", name, bridge.pid, bridge.returncode)
             await _close_ws(ws)
 
+    def _install_signal_handlers(self) -> None:
+        """Record shutdown forensics on the loop's own signal path (async-safe).
+
+        ``loop.add_signal_handler`` runs the callback in the event loop, so we
+        can snapshot *why* we're dying and set ``_shutdown`` without touching
+        re-entrancy-unsafe signal internals. Best-effort: on platforms/threads
+        where it isn't available (e.g. a non-main-thread test loop) we leave the
+        plain handler installed by desktop.py in place.
+        """
+        loop = self.loop
+        if loop is None:
+            return
+        for signame in ("SIGTERM", "SIGINT"):
+            sig = getattr(signal, signame, None)
+            if sig is None:
+                continue
+            try:
+                loop.add_signal_handler(sig, functools.partial(self.request_shutdown, signal_num=int(sig)))
+                self._installed_signals.append(int(sig))
+            except (NotImplementedError, RuntimeError, ValueError, OSError):
+                _log.debug("could not install async signal handler for %s", signame, exc_info=True)
+
+    def _remove_signal_handlers(self) -> None:
+        loop = self.loop
+        if loop is None:
+            return
+        for sig in self._installed_signals:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError, OSError):
+                loop.remove_signal_handler(sig)
+        self._installed_signals.clear()
+
     async def shutdown(self) -> None:
+        # Forensics first: a durable "this is why lunamothd is exiting" line so a
+        # week-long-daemon death isn't a silent gap in the log. Never blocks.
+        ctx = self._shutdown_ctx or snapshot_shutdown_context()
+        with contextlib.suppress(Exception):
+            _log.info("[SHUTDOWN] %s", format_shutdown_context(ctx))
+        self._remove_signal_handlers()
         if self._httpd is not None:
             self._httpd.shutdown()
         for bridge in list(self._pty_bridges):
@@ -1321,8 +1565,15 @@ class Supervisor:
         for child in list(self.charas.values()):
             with contextlib.suppress(Exception):
                 await child.stop()
+        # Final RSS line after teardown, so "last RSS before exit" is in the log.
+        self._canary.stop()
 
-    def request_shutdown(self) -> None:
+    def request_shutdown(self, signal_num: int | None = None) -> None:
+        # Snapshot the trigger the first time we're asked to stop — cheap,
+        # non-blocking, and the most useful single forensic fact.
+        if self._shutdown_ctx is None:
+            with contextlib.suppress(Exception):
+                self._shutdown_ctx = snapshot_shutdown_context(signal_num)
         self._shutdown.set()
 
 

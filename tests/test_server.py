@@ -305,3 +305,87 @@ def test_two_human_turns_still_collide():
         time.sleep(0.01)
     resp = dispatch.dispatch({"jsonrpc": "2.0", "id": 3, "method": "send", "params": {"text": "b"}})
     assert resp["error"]["code"] == -32011
+
+
+# ---- #29 slow-client backpressure on the direct serve --stdio + ws path -----
+
+def test_wssink_write_is_non_blocking_and_drains_via_task():
+    """`write` from the agent thread must enqueue and return at once; a
+    background drain task performs the actual ws.send."""
+    import asyncio
+
+    from lunamoth.server.ws import _WSSink
+
+    sent: list[str] = []
+
+    class FastWS:
+        async def send(self, raw):  # noqa: ANN001
+            sent.append(raw)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        sink = _WSSink(FastWS(), loop)
+        sink.start_drain()
+        # Simulate the agent thread handing frames over.
+        def producer():
+            for i in range(5):
+                assert sink.write({"method": "event", "params": {"i": i}}) is True
+        await asyncio.to_thread(producer)
+        # Let the drain task flush.
+        for _ in range(50):
+            if len(sent) == 5:
+                break
+            await asyncio.sleep(0.01)
+        assert len(sent) == 5
+        assert sink.dropped == 0
+        sink.close()
+
+    asyncio.run(asyncio.wait_for(go(), timeout=5.0))
+
+
+def test_wssink_stalled_client_does_not_block_writer_and_evicts():
+    """A browser that never reads must not block the producing thread: writes
+    return immediately, the bounded buffer overflows by eviction, and after
+    sustained overflow the sink declares the client wedged and closes."""
+    import asyncio
+    import time as _time
+
+    from lunamoth.server import ws as WS
+    from lunamoth.server.ws import _WSSink
+
+    class StalledWS:
+        async def send(self, raw):  # noqa: ANN001
+            await asyncio.sleep(3600)  # never returns — wedged client
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        # Shrink the limits so the test stays fast.
+        old_max, old_strikes = WS._SINK_BUFFER_MAX, WS._SINK_OVERFLOW_STRIKES
+        WS._SINK_BUFFER_MAX, WS._SINK_OVERFLOW_STRIKES = 4, 16
+        try:
+            sink = _WSSink(StalledWS(), loop)
+            sink.start_drain()
+
+            results: list[bool] = []
+
+            def producer():
+                start = _time.monotonic()
+                for i in range(200):
+                    results.append(sink.write({"method": "event", "params": {"i": i}}))
+                # 200 non-blocking writes against a wedged client must be fast.
+                return _time.monotonic() - start
+
+            elapsed = await asyncio.to_thread(producer)
+            # Give the loop a moment to process the queued enqueues.
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if sink._closed:
+                    break
+            assert elapsed < 2.0  # never blocked on the 10s-per-frame send
+            assert sink.dropped > 0  # eviction happened
+            # Sustained overflow ⇒ wedged ⇒ sink closed ⇒ later writes report False.
+            assert sink.write({"method": "event"}) is False
+        finally:
+            WS._SINK_BUFFER_MAX, WS._SINK_OVERFLOW_STRIKES = old_max, old_strikes
+
+    asyncio.run(asyncio.wait_for(go(), timeout=10.0))
