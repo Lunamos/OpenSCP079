@@ -110,11 +110,22 @@ class MemoryStore:
                 )
         cap = self.limits.cap(target)
         text = ENTRY_DELIM.join(entries)
-        # Over budget: drop OLDEST entries until it fits (keep the newest).
+        # Over budget: drop OLDEST entries until it fits (keep the newest). This
+        # whole-store backstop stays — but a SINGLE entry that alone overflows the
+        # cap must NOT be silently sliced mid-content (audit #26; the explicitness
+        # rule). Reject it with consolidate guidance, hermes-style (memory_tool.py
+        # :330-341), so the chara curates instead of being told "saved" after a cut.
         while len(text) > cap and len(entries) > 1:
             entries = entries[1:]
             text = ENTRY_DELIM.join(entries)
-        text = text[:cap]
+        if len(text) > cap and not trust_disk:
+            raise ValueError(
+                f"this {target} entry is {len(text)} chars but the {target} store holds "
+                f"only {cap}. Nothing was saved — silently cutting it would lose the tail. "
+                f"Shorten the entry, or split/consolidate existing entries first; you can "
+                f"also ask for a larger memory budget (request_permission kind=memory)."
+            )
+        text = text[:cap]  # only reachable on trust_disk (operator shrink): truncation is the chosen backstop
         # Normalize so the written bytes always round-trip (a cap cut landing
         # mid-delimiter would otherwise read back as drift next write).
         text = ENTRY_DELIM.join(e.strip() for e in text.split(ENTRY_DELIM) if e.strip())

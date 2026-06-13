@@ -54,6 +54,30 @@ def test_create_validates(tmp_path):
     assert "Real desc." in text and "liar" not in text and "actual body" in text
 
 
+def test_create_rejects_oversized_skill_not_silently_truncated(tmp_path):
+    # audit #26: a SKILL.md over the cap must be refused (not `text[:cap]`),
+    # so the chara never saves a half-written skill thinking it's whole.
+    from lunamoth.tools.skills import MAX_SKILL_CHARS
+
+    s = _store(tmp_path)
+    with pytest.raises(ValueError, match="Nothing was saved"):
+        s.create("huge-skill", "Too big.", "x" * (MAX_SKILL_CHARS + 100))
+    assert not (tmp_path / "own" / "huge-skill").exists()  # nothing written
+
+
+def test_read_oversized_skill_appends_explicit_notice(tmp_path, monkeypatch):
+    import lunamoth.tools.skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "MAX_SKILL_CHARS", 200)
+    f = tmp_path / "user" / "long" / "SKILL.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("---\nname: long\ndescription: A long skill.\n---\n" + "y" * 500, encoding="utf-8")
+    s = SkillStore(own_dir=tmp_path / "own", dirs=[tmp_path / "user"])
+    out = s.read("long")
+    assert len(out) <= 200 + 300  # head + a short notice, not the full 500
+    assert "notice:" in out and "NOT loaded" in out  # the cut is announced, not silent
+
+
 def test_render_block_lists_index(tmp_path):
     s = _store(tmp_path)
     block = s.render_block()

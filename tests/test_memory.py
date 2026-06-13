@@ -158,6 +158,26 @@ def test_operator_shrink_recap_is_not_drift(tmp_path):
     assert m.chars("memory") <= 100
 
 
+# ---- explicit truncation, not silent cuts (audit #26) ----
+
+
+def test_single_oversized_entry_is_rejected_not_silently_cut(tmp_path):
+    # A lone entry that alone overflows the cap must NOT be sliced mid-content
+    # (the old `text[:cap]`). Reject it with consolidate guidance; save nothing.
+    m = MemoryStore(tmp_path / "mem", MemoryLimits(memory_chars=50, user_chars=50))
+    with pytest.raises(ValueError, match="Nothing was saved"):
+        m.add("memory", "z" * 80)
+    assert m.entries("memory") == []  # the quiet cut is gone — nothing landed
+
+
+def test_oversized_replace_is_rejected_too(tmp_path):
+    m = MemoryStore(tmp_path / "mem", MemoryLimits(memory_chars=50, user_chars=50))
+    m.add("memory", "small note")
+    with pytest.raises(ValueError, match="Nothing was saved"):
+        m.replace("memory", "small note", "z" * 80)
+    assert m.entries("memory") == ["small note"]  # the original entry survives intact
+
+
 def test_frozen_snapshot_decouples_prompt_from_writes(tmp_path):
     # The system-prompt memory block is FROZEN at session start: a mid-session
     # write changes disk + the tool response, but NOT the injected block — until

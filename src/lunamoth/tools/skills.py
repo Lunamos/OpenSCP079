@@ -90,9 +90,20 @@ class SkillStore:
         for skill in self.scan():
             if skill["name"] == name:
                 try:
-                    return Path(skill["path"]).read_text(encoding="utf-8")[:MAX_SKILL_CHARS]
+                    raw = Path(skill["path"]).read_text(encoding="utf-8")
                 except OSError as e:
                     raise ValueError(f"skill {name!r} unreadable: {e}") from e
+                # Don't slice silently (audit #26): if the file is over the cap,
+                # return the head WITH an explicit, in-band notice so the chara
+                # knows the tail is missing rather than acting on a quiet cut.
+                if len(raw) > MAX_SKILL_CHARS:
+                    return (
+                        raw[:MAX_SKILL_CHARS]
+                        + f"\n\n[notice: skill {name!r} is {len(raw)} chars; only the first "
+                        f"{MAX_SKILL_CHARS} are shown. The rest was NOT loaded — open the file "
+                        f"directly ({skill['path']}) if you need it.]"
+                    )
+                return raw
         raise ValueError(f"no skill named {name!r} — see the skill index in your context")
 
     # ---- self-improvement -----------------------------------------------------------
@@ -117,9 +128,18 @@ class SkillStore:
         if meta:
             body = stripped.strip()  # engine owns the frontmatter; keep one source of truth
         text = f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+        # Reject an over-cap skill instead of silently truncating it (audit #26):
+        # a half-written SKILL.md is worse than a refused one, and a quiet cut
+        # violates the explicitness rule. Tell the chara to split or trim.
+        if len(text) > MAX_SKILL_CHARS:
+            raise ValueError(
+                f"skill {name!r} is {len(text)} chars but a SKILL.md is capped at "
+                f"{MAX_SKILL_CHARS}. Nothing was saved — silently cutting it would leave a "
+                f"truncated skill. Trim it, or split the know-how across two named skills."
+            )
         path = self.own_dir / name / "SKILL.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text[:MAX_SKILL_CHARS], encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         return path
 
     # ---- prompt block ---------------------------------------------------------------
