@@ -9,8 +9,8 @@ def clean_runtime_sandbox(clear_memory: bool = True) -> None:
     """Clean volatile runtime sandbox artifacts.
 
     This is intentionally conservative: it removes logs and transient workspace
-    files, and optionally clears the durable memory dir. Static files in
-    sandbox/files and env_status.json are preserved.
+    files, and optionally clears the durable memory dir. env_status.json is
+    preserved.
     """
     logs = SANDBOX_ROOT / "logs"
     logs.mkdir(parents=True, exist_ok=True)
