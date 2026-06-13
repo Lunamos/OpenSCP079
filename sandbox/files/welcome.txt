@@ -1,3 +1,0 @@
-WELCOME, OPERATOR.
-This directory is visible to LOCAL-079 through constrained tools only.
-Do not put secrets here.
