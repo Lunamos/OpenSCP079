@@ -1628,7 +1628,7 @@ def list_toolpacks() -> list[dict[str, Any]]:
 
 # ---- sandbox reads for the drawer ------------------------------------------------
 
-_WORK_SKIP_DIRS = {"logs", "memory", "__pycache__", ".git", "node_modules"}
+_WORK_SKIP_DIRS = {"logs", "memory", "skills", "__pycache__", ".git", "node_modules"}
 _KIND_BY_EXT = {
     ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image", ".svg": "image",
     ".html": "web", ".htm": "web",
@@ -1640,9 +1640,11 @@ _KIND_BY_EXT = {
 
 def list_works(meta: S.SessionMeta, limit: int = 200) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for base in (meta.sandbox_dir / "workspace", meta.sandbox_dir / "files"):
-        if not base.is_dir():
-            continue
+    # ONE working directory: workspace/. (The legacy files/ tree is gone —
+    # folded into workspace/ on first sandbox touch.) skills/ is excluded via
+    # _WORK_SKIP_DIRS: it is the chara's know-how, not its works.
+    base = meta.sandbox_dir / "workspace"
+    if base.is_dir():
         for p in base.rglob("*"):
             if not p.is_file() or p.name.startswith("."):
                 continue
@@ -1681,16 +1683,16 @@ def read_work(meta: S.SessionMeta, rel: str) -> dict[str, Any]:
     """In-app preview of one sandbox work (the deck's works page).
 
     `rel` comes from works.list and must stay inside the sandbox's workspace/
-    or files/ trees — anything else is refused (no traversal). Over-cap files
-    return truncated so the UI can offer works.open instead.
+    tree — anything else is refused (no traversal). Over-cap files return
+    truncated so the UI can offer works.open instead.
     """
     if not rel:
         raise RpcError(-32602, "works.read needs rel")
     sandbox = meta.sandbox_dir.resolve()
     target = (sandbox / rel).resolve()
-    allowed = (sandbox / "workspace", sandbox / "files")
-    if not any(base == target or base in target.parents for base in allowed):
-        raise RpcError(-32031, "works.read only serves files under workspace/ or files/")
+    workspace = (sandbox / "workspace").resolve()
+    if not (workspace == target or workspace in target.parents):
+        raise RpcError(-32031, "works.read only serves files under workspace/")
     if not target.is_file():
         raise RpcError(-32035, f"no such work: {rel}")
     size = target.stat().st_size
