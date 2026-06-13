@@ -664,6 +664,13 @@ class CharaChild:
                 # doesn't compound toward suspension or the 1800s cap.
                 self.restart.note_healthy_if_due()
                 snap = await self.snapshot(silent=True)
+                # Autonomous running is OFF (operator toggled it off on the
+                # board): the child stays up for chat/view but fires NO cycles.
+                # Entering the room cannot turn this back on — only the board.
+                if Supervisor.is_paused(self.meta):
+                    self._emit_life(LifeState("waiting"))
+                    await asyncio.sleep(1.0)
+                    continue
                 # While a present user is in chat mode, its own work waits. When
                 # no user is present, background life always continues.
                 if snap.get("user_present") and str(snap.get("mode") or "live") != "live":
@@ -954,6 +961,26 @@ class Supervisor:
             self.charas[name] = child
         return child
 
+    @staticmethod
+    def _paused_path(meta: S.SessionMeta) -> Path:
+        return meta.root / "autonomy_paused"
+
+    @classmethod
+    def is_paused(cls, meta: S.SessionMeta) -> bool:
+        """Operator turned the chara's autonomous running OFF (persists across
+        restarts). Entering to chat/view never changes it; only the board
+        on/off toggle does."""
+        return cls._paused_path(meta).exists()
+
+    @classmethod
+    def set_paused(cls, meta: S.SessionMeta, paused: bool) -> None:
+        path = cls._paused_path(meta)
+        if paused:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+
     def gateway(self, name: str) -> GatewayChild:
         meta = S.load_session(name)
         if meta is None:
@@ -966,10 +993,12 @@ class Supervisor:
 
     async def start_chara(self, name: str) -> dict[str, Any]:
         child = self.child(name)
+        Supervisor.set_paused(child.meta, False)  # board "on" resumes autonomy
         return await child.start()
 
     async def stop_chara(self, name: str) -> dict[str, Any]:
         child = self.child(name)
+        Supervisor.set_paused(child.meta, True)  # board "off" pauses autonomy and persists it
         return await child.stop()
 
     def chara_status(self, name: str) -> dict[str, Any] | None:

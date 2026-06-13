@@ -218,15 +218,20 @@ class ToolGateway:
     def tool_read_file(self, filename: str) -> str:
         return self.sandbox.read_file(filename)
 
+    # Kept for the /workspace and /wread operator commands (the LLM no longer
+    # sees these as separate tools — list_files/read_file ARE the workspace).
     def tool_list_workspace(self) -> list[str]:
-        return self.sandbox.list_workspace()
+        return self.sandbox.list_files()
 
     def tool_read_workspace_file(self, filename: str) -> str:
-        return self.sandbox.read_workspace_file(filename)
+        return self.sandbox.read_file(filename)
 
     def tool_write_file(self, filename: str, text: str) -> str:
         self.sandbox.write_file(filename, text)
-        return f"wrote {filename}"
+        # Report the byte count, not the content — the result must never echo
+        # the file back into the context (write_file exists to keep big content
+        # OUT of the conversation).
+        return f"wrote {filename} ({len(text)} chars)"
 
     def tool_write_log(self, text: str) -> str:
         self.audit.write("note", text=text[:1000])
@@ -390,23 +395,11 @@ class ToolGateway:
                 },
             },
             "list_files": {
-                "description": "List the read-only files provided to you.",
+                "description": "List the files in your workspace (the same directory your terminal works in).",
                 "parameters": {"type": "object", "properties": {}},
             },
             "read_file": {
-                "description": "Read one of the read-only files provided to you.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"filename": {"type": "string"}},
-                    "required": ["filename"],
-                },
-            },
-            "list_workspace": {
-                "description": "List files in your read/write workspace.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-            "read_workspace_file": {
-                "description": "Read a file from your read/write workspace.",
+                "description": "Read a file from your workspace.",
                 "parameters": {
                     "type": "object",
                     "properties": {"filename": {"type": "string"}},
@@ -414,7 +407,11 @@ class ToolGateway:
                 },
             },
             "write_file": {
-                "description": "Write a text file into your read/write workspace.",
+                "description": (
+                    "Write a text file to your workspace — the clean way to create or overwrite a file "
+                    "without piping it through the terminal (no shell quoting, no context bloat). The file "
+                    "lands in the same workspace your terminal sees, so you can `cat`/edit it afterwards."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"filename": {"type": "string"}, "text": {"type": "string"}},

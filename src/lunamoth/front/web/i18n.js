@@ -19,6 +19,7 @@ const I18N = {
   // board card
   "st-idle-live": ["在过自己的日子", "Living its own day"],
   "st-offline": ["离线", "Offline"],
+  "st-paused": ["自主运行已关闭", "Autonomy off"],
   "st-new": ["尚未配置", "Not set up yet"],
   "st-error": ["出了点问题", "Something went wrong"],
   "go-settings": ["去设置", "Open settings"],

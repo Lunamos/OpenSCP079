@@ -613,7 +613,8 @@ class LunaMothAgent:
         if self._agent_loop_active():
             return self.llm.stream_agent(
                 user_text, context, stable, volatile, self.tools.schemas(), self._execute_tool,
-                record=record, in_context=in_context, reasoning=reasoning, channel=channel,
+                record=record, max_steps=max(1, int(getattr(self.settings, "max_tool_steps", 80))),
+                in_context=in_context, reasoning=reasoning, channel=channel,
             )
         return self.llm.stream_complete(
             user_text, context, stable, volatile, in_context=in_context, reasoning=reasoning, channel=channel,

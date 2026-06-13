@@ -476,3 +476,27 @@ def test_gateway_clean_exit_zero_stops(monkeypatch, tmp_path):
 
     asyncio.run(run())
     assert gw.info.state == "stopped" and gw.info.error_message == ""
+
+
+def test_autonomy_pause_marker_round_trip(tmp_path):
+    """The board on/off persists as a marker; entering never changes it."""
+    from lunamoth.server.supervisor import Supervisor
+    from lunamoth.session.sessions import SessionMeta
+
+    meta = SessionMeta(name="p")
+    # point the session root at a temp dir
+    object.__setattr__(meta, "name", "p")
+    import lunamoth.session.sessions as S
+    root = tmp_path / "sessions" / "p"
+    root.mkdir(parents=True)
+    # SessionMeta.root derives from sessions_dir()/name — patch sessions_dir
+    orig = S.sessions_dir
+    S.sessions_dir = lambda: tmp_path / "sessions"
+    try:
+        assert Supervisor.is_paused(meta) is False
+        Supervisor.set_paused(meta, True)
+        assert Supervisor.is_paused(meta) is True
+        Supervisor.set_paused(meta, False)
+        assert Supervisor.is_paused(meta) is False
+    finally:
+        S.sessions_dir = orig

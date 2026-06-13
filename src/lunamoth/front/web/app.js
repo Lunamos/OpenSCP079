@@ -337,6 +337,8 @@ function statusOf(s) {
   if (s.status === "crashed") return { dot: "err", line: s.error || "crashed", cls: "err" };
   if (s.error && (s.error_kind === "auth" || (s.status !== "attached" && s.status !== "running")))
     return { dot: "err", line: t("st-error"), cls: "err" };
+  // Autonomous running turned off by the operator — a deliberate, calm state.
+  if (s.paused) return { dot: "off", line: t("st-paused"), cls: "" };
   if (s.status === "idle") return { dot: "off", line: `${t("st-offline")} · ${timeAgo(s.last_active)}`, cls: "" };
   if (s.preview && s.preview.awaiting)
     return { dot: "live", line: s.preview.text, cls: "msg" };
@@ -424,7 +426,7 @@ function renderBoard() {
   $("board-empty").style.display = list.length ? "none" : "flex";
   if (!list.length) decorateDefaultCard();
   for (const s of list) {
-    const live = s.status === "running" || s.status === "attached";
+    const live = (s.status === "running" || s.status === "attached") && !s.paused;
     const st = statusOf(s);
     const deckCard = cardForSession(s.name);
     const portrait = el("div", {

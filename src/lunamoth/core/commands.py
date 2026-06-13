@@ -271,6 +271,19 @@ def _reasoning(agent, session, arg: str) -> Reply:
                  {"reasoning": cur})
 
 
+def _steps(agent, session, arg: str) -> Reply:
+    want = arg.strip()
+    if want:
+        try:
+            n = max(1, int(want))
+        except ValueError:
+            return Reply(False, "usage: /steps <n> — max tool-call iterations per turn (e.g. 80)")
+        _persist(agent, max_tool_steps=n)
+        return Reply(True, f"tool steps = {n} per turn (persisted)", {"max_tool_steps": n})
+    cur = getattr(agent.settings, "max_tool_steps", 80)
+    return Reply(True, f"tool steps = {cur} per turn  (usage: /steps <n>)", {"max_tool_steps": cur})
+
+
 def _model(agent, session, arg: str) -> Reply:
     want = arg.strip()
     if want:
@@ -315,6 +328,7 @@ _REGISTRY: dict[str, Command] = dict([
     _cmd("thinking", "/thinking on|off", "show the thinking text (default: ✶ indicator only)", _thinking),
     _cmd("reasoning", "/reasoning off|low|medium|high", "reasoning effort (default medium)", _reasoning),
     _cmd("model", "/model <id>", "session-scoped model hot-swap (empty: show current)", _model),
+    _cmd("steps", "/steps <n>", "max tool-call iterations per turn (default 80)", _steps),
     _cmd("compact", "/compact", "fold older turns into a summary now", _compact),
     _cmd("reset", "/reset", "zero session context (new transcript epoch)", _reset),
     _cmd("help", "/help", "this list", _help),

@@ -78,6 +78,10 @@ class Settings:
     # Engagement quiet period, seconds: while you are actively talking the chara
     # sets its own work aside; after this much silence it picks its life back up.
     quiet: int = 300
+    # Max tool-call iterations in one turn. A chara doing real autonomous work
+    # needs room (read → run → write → verify chains); the loop guardrails stop
+    # genuinely-stuck repetition, so this can be generous. Operator-configurable.
+    max_tool_steps: int = 80
     # Base seconds between spontaneous cycles. Card defaults may
     # supply this; operator commands/env/config persist an override.
     patience: float = 600.0
@@ -154,7 +158,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "embodiment_override": ("LUNAMOTH_EMBODIMENT",),
 }
 
-_INT_FIELDS = {"max_tokens", "memory_chars", "user_chars", "quiet"}
+_INT_FIELDS = {"max_tokens", "memory_chars", "user_chars", "quiet", "max_tool_steps"}
 
 _FIELD_TYPES = {f.name: f.type for f in fields(Settings)}
 

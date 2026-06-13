@@ -6,8 +6,6 @@
     "memory",
     "list_files",
     "read_file",
-    "list_workspace",
-    "read_workspace_file",
     "write_file",
     "inspect_env",
     "write_log",

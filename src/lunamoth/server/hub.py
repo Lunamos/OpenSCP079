@@ -1372,11 +1372,17 @@ def session_entry(meta: S.SessionMeta, supervisor: Any | None = None) -> dict[st
     if isinstance(child_status, dict) and child_status.get("state") == "crashed":
         status = "crashed"
         error = str(child_status.get("detail") or "crashed")
+    # Autonomous running OFF (board toggle, persisted): the board reflects the
+    # operator's intent even if the child is momentarily up for a chat/view.
+    paused = (meta.root / "autonomy_paused").exists()
+    if paused and status != "crashed":
+        status = "paused"
     return {
         "name": meta.name,
         "char_name": char_name,
         "lang": lang,
         "status": status,
+        "paused": paused,
         "chara": child_status,
         "isolation": meta.isolation,
         "model": cfg.get("model", ""),
