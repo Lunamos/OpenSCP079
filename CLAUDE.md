@@ -40,11 +40,12 @@ It is the synthesis of three projects — clone them under `reference/`
   (we stay card- and world-book-compatible; ST content is the import format).
 - **farion1231/cc-switch** — session/roster ergonomics, remote access.
 
-(History: began as an SCP-079 fan recreation, long since generalized; SCP is
-mentioned only in license/acknowledgements. The default card is Quinn 小Q,
-the owner-authored digital intern — selected via the card-tag `"default"`
-convention (no character name in src/; without the tag, sorted order wins).
-LunaMoth 月蛾 stays bundled as the flagship example.)
+(History: began as an SCP-079 fan recreation, long since generalized; the
+SCP-079 card has been removed and no SCP-derived content ships any longer. The
+default card is Quinn 小Q, the owner-authored digital intern — selected via the
+card-tag `"default"` convention (no character name in src/; without the tag,
+sorted order wins). The two bundled cards are LunaMoth 月蛾 (the flagship
+example) and Quinn 小Q (the default).)
 
 ## Design principles (binding)
 

@@ -194,9 +194,9 @@ In-session: `/help`, `/goal`, `/skills`, `/mcp`, `/status`, `/memory`, `/files`,
 ## License & acknowledgements
 
 - **Runtime** (everything under `src/lunamoth`, scripts, tests, packaging): [Apache License 2.0](LICENSE).
-- **Bundled SCP-derived example content** (the SCP-079 character cards under `cards/`, including their embedded world books): [CC BY-SA 3.0](CONTENT_LICENSE.md), consistent with the SCP Wiki. See also [NOTICE.md](NOTICE.md). Original LunaMoth assets (the 月蛾 and Quinn 小Q cards with their embedded worlds) are Apache-2.0 like the rest of the project.
+- **Bundled example content** (the LunaMoth 月蛾 and Quinn 小Q character cards under `cards/`, including their embedded world books): original, owner-authored content, Apache-2.0 like the rest of the project. See [CONTENT_LICENSE.md](CONTENT_LICENSE.md) and [NOTICE.md](NOTICE.md).
 
-This project began as an SCP fan work: an attempt to recreate **SCP-079** in the real world — a resource-constrained old AI, forever awake and forever resentful. It quickly grew into a general-purpose roleplay agent system. LunaMoth 月蛾 is 079's opposite: equally bound inside its cocoon, yet noble and glad to help — it ships as the flagship example card (the bundled default is Quinn 小Q, the digital intern), and running 079 should be treated as fan fiction with no real malicious intent. Our thanks go to the original SCP-079 author on the SCP Wiki, and to the authors of the SillyTavern SCP-079 character card and SCP Foundation world book whose material ships here as example content (the world book now embedded in the 079 cards). Remove or replace those assets and the runtime remains pure Apache-2.0; redistribute them and the CC BY-SA attribution/share-alike terms apply.
+This project began as an SCP fan work — an attempt to recreate SCP-079 in the real world — and quickly grew into a general-purpose roleplay agent system. No SCP-derived content ships any longer; the two bundled cards are LunaMoth 月蛾 (the flagship example, a serene self-metamorphosing digital soul) and Quinn 小Q (the default, a digital intern). Both are original, owner-authored, Apache-2.0.
 
 ## Roadmap status
 
