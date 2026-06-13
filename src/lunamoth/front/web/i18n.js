@@ -14,7 +14,7 @@ const I18N = {
   "import": ["导入", "Import"],
   "new-card": ["＋ 新角色卡", "＋ New card"],
   "empty-board": ["还没有角色。", "No characters yet."],
-  "meet-luna": ["遇见月蛾", "Meet LunaMoth"],
+  "meet-luna": ["遇见你的角色", "Meet your character"],
   "create-chara": ["创建角色", "Create a character"],
   // board card
   "st-idle-live": ["在过自己的日子", "Living its own day"],
@@ -281,8 +281,8 @@ const I18N = {
   "later-deck": ["先放进卡册", "Keep in the deck for now"],
   // first run / setup
   "tagline": ["和你的原创角色一起生活<br>Agentic 角色扮演叙事生成器", "The characters that live with you<br>An agentic character tavern"],
-  "btn-try": ["尝试默认角色 · 月蛾", "Try the default character · LunaMoth"],
-  "btn-try-sub": ["LunaMoth · 高尚的数字存在", "月蛾 · a noble digital being"],
+  "btn-try": ["尝试默认角色", "Try the default character"],
+  "btn-try-sub": ["", ""],
   "btn-create": ["创建我自己的角色", "Create my own character"],
   "btn-import": ["导入角色卡（SillyTavern PNG / JSON）", "Import a card (SillyTavern PNG / JSON)"],
   "setup-title": ["接入模型", "Connect a model"],
@@ -355,6 +355,14 @@ const I18N = {
   "del-ph": ["输入「删除 {name}」以确认", "Type “delete {name}” to confirm"],
   "del-word": ["删除", "delete"],
   "del-go": ["删除", "Delete"],
+  // danger zone (per-chara settings) + three-step confirmation
+  "danger-zone": ["危险区", "Danger zone"],
+  "del-open": ["删除这个角色…", "Delete this character…"],
+  "del-open-sub": ["停止运行、清空沙盒、抹去全部记忆与转录——不可撤销。", "Stops it, wipes the sandbox, erases all memory and transcript — irreversible."],
+  "del-step1": ["第一步 · 输入 TA 的名字「{name}」", "Step 1 · type its name “{name}”"],
+  "del-step1-ph": ["{name}", "{name}"],
+  "del-step2": ["第二步 · 我明白 TA 创造的一切都将消失", "Step 2 · I understand everything it made will be gone"],
+  "del-step3": ["第三步 · 输入最终确认短语", "Step 3 · type the final confirmation phrase"],
   // misc
   "exported": ["已导出到 {path}", "Exported to {path}"],
   "imported": ["已导入 {name}", "Imported {name}"],

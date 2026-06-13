@@ -396,6 +396,7 @@ function renderBoard() {
   const grid = $("board-grid");
   grid.innerHTML = "";
   $("board-empty").style.display = list.length ? "none" : "flex";
+  if (!list.length) decorateDefaultCard();
   for (const s of list) {
     const live = s.status === "running" || s.status === "attached";
     const st = statusOf(s);
@@ -481,7 +482,9 @@ function boardErrText(s) {
 }
 
 function cardMenu(ev, s) {
-  // minimal ⋯ menu as a one-off floating list near the cursor
+  // minimal ⋯ menu as a one-off floating list near the cursor.
+  // Deletion is intentionally NOT here — it lives only in the per-chara
+  // settings panel's danger zone (chat.js), never reachable from a status menu.
   closeMenus();
   const menu = el("div", { class: "palette open", style: `position:fixed;left:${Math.min(ev.clientX, innerWidth - 240)}px;top:${ev.clientY + 8}px;bottom:auto;transform:none;width:220px;z-index:90` },
     el("div", { class: "row", onclick: async () => {
@@ -491,8 +494,7 @@ function cardMenu(ev, s) {
         toast(t("exported", { path: r.path }));
         hub.call("open.path", { path: r.path, reveal: true }).catch(() => {});
       } catch (e) { toast(rpcErrText(e), true); }
-    } }, t("menu-export")),
-    el("div", { class: "row danger", onclick: () => { closeMenus(); openDeleteModal(s); } }, t("menu-delete")));
+    } }, t("menu-export")));
   menu.dataset.menu = "1";
   document.body.appendChild(menu);
   setTimeout(() => document.addEventListener("click", closeMenus, { once: true }), 0);
@@ -508,19 +510,57 @@ $("board-new").addEventListener("click", () => ensureModel(openCreateFlow));
 $("empty-meet").addEventListener("click", () => ensureModel(wakeDefaultLuna));
 $("empty-create").addEventListener("click", () => ensureModel(openCreateFlow));
 
-/* ---------- delete (the heaviest friction in the app, deliberately) ---------- */
+/* ---------- delete (the heaviest friction in the app, deliberately) ----------
+   Three sequential gates before session.delete fires: (1) type the chara's
+   name, (2) tick an explicit understanding checkbox, (3) type the final
+   "delete {name}" phrase. The Delete button only enables once all three pass.
+   The backend still gates on confirm === name (RpcError -32034 otherwise). */
 function openDeleteModal(s) {
   const phrase = `${t("del-word")} ${s.char_name}`;
-  const input = el("input", { class: "confirm-input", placeholder: t("del-ph", { name: s.char_name }) });
+  const gate = { name: false, ack: false, phrase: false };
   const delBtn = el("button", { class: "btn danger", disabled: "" }, t("del-go"));
-  input.addEventListener("input", () => {
-    if (input.value.trim() === phrase) delBtn.removeAttribute("disabled");
+  function refreshGate() {
+    if (gate.name && gate.ack && gate.phrase) delBtn.removeAttribute("disabled");
     else delBtn.setAttribute("disabled", "");
+  }
+
+  // step 1 — type its name
+  const nameInput = el("input", { class: "confirm-input", placeholder: t("del-step1-ph", { name: s.char_name }) });
+  nameInput.addEventListener("input", () => {
+    gate.name = nameInput.value.trim() === s.char_name;
+    step1.classList.toggle("ok", gate.name);
+    refreshGate();
   });
+  const step1 = el("div", { class: "del-step" },
+    el("label", null, t("del-step1", { name: s.char_name })), nameInput);
+
+  // step 2 — explicit understanding checkbox
+  const ackBox = el("input", { type: "checkbox" });
+  const ackLabel = el("label", { class: "del-check" }, ackBox,
+    el("span", null, t("del-step2")));
+  ackBox.addEventListener("change", () => {
+    gate.ack = ackBox.checked;
+    step2.classList.toggle("ok", gate.ack);
+    refreshGate();
+  });
+  const step2 = el("div", { class: "del-step" }, ackLabel);
+
+  // step 3 — type the final phrase
+  const phraseInput = el("input", { class: "confirm-input", placeholder: t("del-ph", { name: s.char_name }) });
+  phraseInput.addEventListener("input", () => {
+    gate.phrase = phraseInput.value.trim() === phrase;
+    step3.classList.toggle("ok", gate.phrase);
+    refreshGate();
+  });
+  const step3 = el("div", { class: "del-step" },
+    el("label", null, t("del-step3")), phraseInput);
+
   delBtn.addEventListener("click", async () => {
+    if (!(gate.name && gate.ack && gate.phrase)) return;
     try {
       await hub.call("session.delete", { name: s.name, confirm: s.name }, 30000);
       closeModal();
+      navTo("#/");
       refreshHub();
     } catch (e) { toast(e.message, true); }
   });
@@ -540,7 +580,7 @@ function openDeleteModal(s) {
           toast(t("exported", { path: r.path }));
         } catch (e) { toast(e.message, true); }
       } }, t("del-export")),
-      input,
+      step1, step2, step3,
       el("div", { class: "acts" },
         el("button", { class: "btn text", onclick: closeModal }, t("cancel")),
         el("div", { class: "grow" }),
@@ -1023,6 +1063,25 @@ function frShowWelcome() {
   $("fr-welcome").style.display = "flex";
   $("fr-setup").style.display = "none";
   $("fr-dots").innerHTML = "<i class='on'></i><i></i>";
+  decorateDefaultCard();
+}
+
+// Render the resolved default card's name + tagline beside the generic
+// "try the default character" labels (first-run + board empty-state).
+function decorateDefaultCard() {
+  const card = defaultLunaCard();
+  const trySpan = document.querySelector("#fr-try span[data-i18n='btn-try']");
+  const trySub = document.querySelector("#fr-try small[data-i18n='btn-try-sub']");
+  if (trySpan) {
+    const base = t("btn-try");
+    trySpan.textContent = card ? `${base} · ${card.name}` : base;
+  }
+  if (trySub) trySub.textContent = card ? (card.tagline || "") : "";
+  const meet = $("empty-meet");
+  if (meet) {
+    const base = t("meet-luna");
+    meet.textContent = card ? `${base} · ${card.name}` : base;
+  }
 }
 function frShowSetup() {
   $("fr-welcome").style.display = "none";
@@ -1048,6 +1107,11 @@ function ensureModel(action) {
 
 function defaultLunaCard() {
   const cards = (state.hub && state.hub.cards) || [];
+  // The default card is the bundled one whose tags contain "default" (today: Quinn 小Q).
+  // Resolve dynamically so the welcome follows whichever card carries the tag.
+  const tagged = cards.find((c) => c.builtin && (c.tags || []).includes("default"));
+  if (tagged) return tagged;
+  // Fallback to the historical 月蛾/lunamoth lookup if nothing is tagged.
   const wantZh = getLangCode() === "zh";
   return cards.find((c) => c.builtin && c.lang === (wantZh ? "zh" : "en") &&
            (c.name === "月蛾" || c.name.toLowerCase() === "lunamoth")) ||
@@ -1548,3 +1612,7 @@ function renderShapeStep(root, flow) {
 applyTheme(localStorage.getItem("lm-theme") || "system");
 setLangCode(localStorage.getItem("lm-lang") || (navigator.language.startsWith("zh") ? "zh" : "en"));
 applyI18n();
+
+// applyI18n rewrites data-i18n nodes by innerHTML on every language switch,
+// which wipes the dynamic default-card decoration — re-apply it afterwards.
+document.addEventListener("lm-lang-changed", () => decorateDefaultCard());
