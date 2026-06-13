@@ -1317,6 +1317,14 @@ def weixin_qr_status(meta: S.SessionMeta, qrcode_value: str) -> dict[str, Any]:
     api = WeixinAPI(base_url=str(cfg.get("base_url") or ""))
     try:
         status = api.get_qrcode_status(qrcode_value, timeout_ms=5_000)
+    except (TimeoutError, urllib.error.URLError) as exc:
+        # A slow poll is not a failure — the QR is still pending. The client
+        # polls again; surfacing "read operation timed out" as a hard error
+        # (which it did) just looked like the gateway broke.
+        reason = getattr(exc, "reason", exc)
+        if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            return {"status": "wait"}
+        raise RpcError(-32062, f"weixin qr status failed: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 - surface, never fabricate
         raise RpcError(-32062, f"weixin qr status failed: {exc}") from exc
     raw_status = str(status.get("status") or "wait")
@@ -2001,7 +2009,11 @@ class HubDispatcher:
             return _await_supervisor(self.supervisor, self.supervisor.stop_gateway(meta.name, persist=True))
         if method == "gateway.status":
             meta = self._meta(p)
-            return self.supervisor.gateway_status(meta.name) if self.supervisor is not None else _gateway_status_from_disk(meta)
+            if self.supervisor is None:
+                return _gateway_status_from_disk(meta)
+            # Live query: ask the in-child host whether it is actually running,
+            # waiting for a QR (needs_login), or stopped — not a heuristic.
+            return _await_supervisor(self.supervisor, self.supervisor.gateway_status_live(meta.name))
         if method == "superchat.read":
             meta = self._meta(p)
             return set_superchat_read(meta, float(p.get("ts") or 0.0))

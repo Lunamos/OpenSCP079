@@ -310,6 +310,13 @@ class WeixinAdapter(Adapter):
     def clear_reply_target(self) -> None:
         self._reply_target = ""
 
+    def needs_login(self) -> bool:
+        # A valid iLink session is a saved token that hasn't been flagged for
+        # re-login. Without it, run() would open a QR flow — which the host must
+        # NOT do (the app's weixin.qr flow owns login, on one account at a time).
+        with self._state_lock:
+            return not (self.token and not self.needs_relogin)
+
     def _load_state(self) -> None:
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))

@@ -805,10 +805,12 @@ class GatewayChild:
         if not isinstance(st, dict):
             return
         state = str(st.get("state") or "stopped")
-        self.info.state = "running" if state == "running" else "stopped"
+        # needs_login = enabled & configured but waiting for an interactive QR
+        # scan; it must read as its own state, not a false "running".
+        self.info.state = state if state in ("running", "needs_login") else "stopped"
         detail = str(st.get("detail") or "")
         self.info.detail = detail
-        self.info.error_message = detail
+        self.info.error_message = detail if state not in ("running", "needs_login") else ""
         if st.get("platform"):
             self.info.platform = str(st.get("platform"))
 
@@ -819,18 +821,30 @@ class GatewayChild:
         return None
 
     def status(self) -> dict[str, Any]:
+        # Sync, best-effort (no RPC): used by the board summary. The gateway PANE
+        # uses status_live(), which asks the in-child host for the truth.
         self.info.platform = self._platform()
         child = self._running_child()
-        if not self.enabled():
-            self.info.state = "stopped"
-        elif child is None:
-            # Enabled but the chara child isn't up: the host boots with it.
+        if not self.enabled() or child is None:
             if self.info.state not in ("backoff", "fatal"):
                 self.info.state = "stopped"
-        elif self.info.state not in ("backoff", "fatal"):
-            # Enabled + child running: the host starts on boot with the child.
-            self.info.state = "running"
         self.info.pid = int(child.proc.pid) if child and child.proc else 0
+        return dataclasses.asdict(self.info)
+
+    async def status_live(self) -> dict[str, Any]:
+        """Ask the in-child messaging host for its real state (running vs
+        needs_login vs stopped) — never the "child is up so it must be running"
+        heuristic, which lied while an adapter sat waiting for a QR scan."""
+        self.info.platform = self._platform()
+        child = self._running_child()
+        if not self.enabled() or child is None:
+            self.info.state = "stopped"
+            self.info.detail = self.info.error_message = ""
+            self.info.pid = 0
+            return dataclasses.asdict(self.info)
+        with contextlib.suppress(Exception):
+            self._apply_host_status(await child.private_call("messaging.status", {}, timeout=8.0))
+        self.info.pid = int(child.proc.pid) if child.proc else 0
         return dataclasses.asdict(self.info)
 
     async def start(self, *, persist: bool = False) -> dict[str, Any]:
@@ -1057,6 +1071,12 @@ class Supervisor:
                 return None
             gw = self.gateway(name)
         return gw.status()
+
+    async def gateway_status_live(self, name: str) -> dict[str, Any] | None:
+        meta = S.load_session(name)
+        if meta is None:
+            return None
+        return await self.gateway(name).status_live()
 
     async def bootstrap_gateways(self) -> None:
         for meta in S.list_sessions():

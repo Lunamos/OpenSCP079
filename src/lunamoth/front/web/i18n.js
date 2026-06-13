@@ -151,6 +151,7 @@ const I18N = {
   "gw-needs-setup": ["待配置", "Needs setup"],
   "gw-running": ["网关运行中", "Gateway running"],
   "gw-stopped": ["网关已停止", "Gateway stopped"],
+  "gw-needs-login": ["待扫码登录", "Waiting for QR login"],
   "gw-creds": ["获取凭据", "Get your credentials"],
   "gw-required": ["必填", "Required"],
   "gw-recommended": ["建议", "Recommended"],

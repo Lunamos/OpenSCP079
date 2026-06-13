@@ -68,5 +68,16 @@ class Adapter(abc.ABC):
     def close(self) -> None:
         """Stop platform I/O. Adapters with background servers override this."""
 
+    def needs_login(self) -> bool:
+        """True when this adapter can't run until an interactive login the
+        operator must complete out of band (e.g. a WeChat QR scan).
+
+        The in-process host (server/messaging_host.py) checks this BEFORE
+        starting an adapter: a not-yet-logged-in adapter is left pending rather
+        than spun up, so it never opens its own QR/login session competing with
+        the app's QR flow on the same account. Most adapters use static
+        credentials and never need this — the default is False."""
+        return False
+
 
 AdapterFactory = Callable[[dict], Adapter]

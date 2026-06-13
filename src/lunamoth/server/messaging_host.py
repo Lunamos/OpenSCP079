@@ -84,23 +84,42 @@ class MessagingHost:
             self._platform = ",".join(sorted(a.name for a in adapters))
             self._stop.clear()
             self._inbox = queue.Queue()
-            # The shared agent must have a session; the supervisor attaches the
-            # child in the background, but be defensive when started directly.
-            self._dispatcher.ensure_attached()
+            # Only start adapters that are ready: one still needing an interactive
+            # login (a WeChat QR scan) is left PENDING — never spun up — so the
+            # host never opens a second QR session competing with the app's QR
+            # flow on the same account (the bug that made the QR die instantly).
+            ready = [a for a in adapters if not a.needs_login()]
+            pending = [a for a in adapters if a.needs_login()]
             self._threads = []
-            for adapter in adapters:
-                th = threading.Thread(
-                    target=self._run_adapter, args=(adapter,),
-                    name=f"lunamoth-{adapter.name}-adapter", daemon=True,
+            if ready:
+                # The shared agent needs a session; the supervisor attaches the
+                # child in the background, but be defensive when started direct.
+                self._dispatcher.ensure_attached()
+                for adapter in ready:
+                    th = threading.Thread(
+                        target=self._run_adapter, args=(adapter,),
+                        name=f"lunamoth-{adapter.name}-adapter", daemon=True,
+                    )
+                    th.start()
+                    self._threads.append(th)
+                self._relay = threading.Thread(
+                    target=self._relay_loop, name="lunamoth-messaging-relay", daemon=True,
                 )
-                th.start()
-                self._threads.append(th)
-            self._relay = threading.Thread(
-                target=self._relay_loop, name="lunamoth-messaging-relay", daemon=True,
-            )
-            self._relay.start()
-            self._state, self._detail = "running", ""
-            _log.info("messaging host started: %s", self._platform)
+                self._relay.start()
+            if ready:
+                self._state = "running"
+                self._detail = (
+                    "" if not pending
+                    else f"awaiting login: {','.join(a.name for a in pending)}"
+                )
+            elif pending:
+                # Honest status: enabled & configured, but waiting for the QR.
+                self._state = "needs_login"
+                self._detail = ",".join(a.name for a in pending)
+            else:
+                self._state = "stopped"
+                self._detail = ""
+            _log.info("messaging host start: state=%s platform=%s", self._state, self._platform)
             return self.status()
 
     def stop(self) -> dict[str, Any]:

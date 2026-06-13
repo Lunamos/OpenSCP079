@@ -388,6 +388,8 @@ class _FakeCharaChild:
             return self.host_status
         if method == "messaging.stop":
             return {"state": "stopped", "platform": "weixin", "detail": ""}
+        if method == "messaging.status":
+            return self.host_status
         return {"state": "stopped", "platform": "", "detail": ""}
 
 
@@ -446,20 +448,32 @@ def test_gateway_stop_tells_running_child(tmp_path):
     assert gw.info.state == "stopped" and gw.info.error_message == ""
 
 
-def test_gateway_status_running_when_enabled_and_child_up(tmp_path):
-    child = _FakeCharaChild()
+def test_gateway_status_live_reflects_real_host_state(tmp_path):
+    # status_live() asks the in-child host for the truth (running vs
+    # needs_login vs stopped) — never a "child is up so it must be running" lie.
+    child = _FakeCharaChild(host_status={"state": "needs_login", "platform": "weixin", "detail": "weixin"})
     gw = _make_gateway(tmp_path, _FakeSupervisor(child))
     _write_messaging(tmp_path, enabled=True)
 
-    st = gw.status()
+    st = asyncio.run(gw.status_live())
+    assert st["state"] == "needs_login"
+    assert "messaging.status" in child.calls
+
+
+def test_gateway_status_live_running(tmp_path):
+    child = _FakeCharaChild(host_status={"state": "running", "platform": "weixin", "detail": ""})
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+    _write_messaging(tmp_path, enabled=True)
+
+    st = asyncio.run(gw.status_live())
     assert st["state"] == "running" and st["platform"] == "weixin"
 
 
-def test_gateway_status_stopped_when_child_down(tmp_path):
+def test_gateway_status_live_stopped_when_child_down(tmp_path):
     gw = _make_gateway(tmp_path, _FakeSupervisor(None))
     _write_messaging(tmp_path, enabled=True)
 
-    st = gw.status()
+    st = asyncio.run(gw.status_live())
     assert st["state"] == "stopped"  # host boots with the chara child
 
 

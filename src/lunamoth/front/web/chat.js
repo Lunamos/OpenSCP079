@@ -1262,12 +1262,15 @@ class ChatController {
     }
 
     function chips() {
-      const run = gwStatus && gwStatus.state === "running";
+      const st = (gwStatus && gwStatus.state) || "stopped";
+      const runText = st === "running" ? t("gw-running")
+        : st === "needs_login" ? t("gw-needs-login") : t("gw-stopped");
+      const runCls = st === "running" ? "ok" : st === "needs_login" ? "warn" : "";
       return el("div", { class: "gw-chips" },
         el("span", { class: "gw-chip " + (enabled ? "ok" : "") }, enabled ? t("gw-enabled") : t("gw-disabled")),
         el("span", { class: "gw-chip " + (requiredFilled(plat) ? "ok" : "warn") },
           requiredFilled(plat) ? t("gw-configured") : t("gw-needs-setup")),
-        el("span", { class: "gw-chip " + (run ? "ok" : "") }, run ? t("gw-running") : t("gw-stopped")));
+        el("span", { class: "gw-chip " + runCls }, runText));
     }
 
     function fieldRow(plat2, fd) {

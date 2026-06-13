@@ -99,7 +99,32 @@ def test_wechat_unauthorized_sender_refused_not_run():
     assert "hi there" not in adapter.sent
 
 
-def test_wechat_redelivery_deduped():
+class _LoginPendingAdapter(_Adapter):
+    """An adapter that isn't logged in yet (a WeChat QR not yet scanned)."""
+
+    def needs_login(self):
+        return True
+
+    def run(self, inbox):
+        # If the host ever started this, it would open a competing QR session.
+        raise AssertionError("a login-pending adapter must not be run by the host")
+
+
+def test_host_skips_login_pending_adapter_and_reports_needs_login(tmp_path, monkeypatch):
+    import lunamoth.server.messaging_host as mh
+
+    handle = _Handle()
+    frames: list[dict] = []
+    dispatch = JsonRpcDispatcher(frames.append, handle=handle)
+    cfg = tmp_path / "messaging.json"
+    cfg.write_text('{"enabled": true, "adapters": {"weixin": {}}}', encoding="utf-8")
+    host = MessagingHost(dispatch, cfg)
+    # The adapter for this config needs login → host must leave it pending.
+    monkeypatch.setattr(mh, "make_adapters", lambda c: [_LoginPendingAdapter()])
+
+    st = host.start()
+    assert st["state"] == "needs_login"   # honest, not a false "running"
+    assert not handle.attached            # never even attached / opened a session
     handle = _Handle()
     adapter = _Adapter()
     frames: list[dict] = []
