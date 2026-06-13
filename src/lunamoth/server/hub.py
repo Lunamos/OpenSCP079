@@ -1326,7 +1326,31 @@ def weixin_qr_status(meta: S.SessionMeta, qrcode_value: str) -> dict[str, Any]:
             out["account_id"] = save_login_state(meta.root / "weixin_state.json", status, cfg)
         except RuntimeError as exc:
             raise RpcError(-32062, str(exc)) from exc
+        # Scanning the QR IS configuring the weixin adapter. Ensure messaging.json
+        # has an adapters.weixin block (it needs no required fields — login lives
+        # in weixin_state.json), else the gateway starts with no adapters and
+        # crashes with "no adapters configured" even though you're logged in.
+        ensure_weixin_adapter(meta)
     return out
+
+
+def ensure_weixin_adapter(meta: S.SessionMeta) -> None:
+    """Make sure messaging.json declares the weixin adapter so the gateway can
+    run it. Idempotent; does not overwrite an existing weixin config."""
+    data = _read_messaging(meta)
+    adapters = data.get("adapters")
+    if not isinstance(adapters, dict):
+        adapters = {}
+    if not isinstance(adapters.get("weixin"), dict):
+        adapters["weixin"] = {}
+        data["adapters"] = adapters
+        path = _messaging_path(meta)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
 
 
 def _gateway_status_from_disk(meta: S.SessionMeta) -> dict[str, Any]:

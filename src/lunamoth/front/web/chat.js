@@ -169,30 +169,13 @@ const GW_MASK = "••••••••"; // hub.py _SECRET_MASK：后端给�
    预存配置安全且落地即用）。
    注意：allowed_senders 是顶层共享字段（每个平台的「建议」区都渲染那一行，带
    gw-allowed-why 的安全理由），不要重复进 per-platform 字段列表。 */
+// While we test WeChat, the gateway page shows ONLY WeChat (iLink). The other
+// adapters (wecom/weixinpad/qq/telegram) still exist in the backend — they're
+// just hidden from the deck for now; re-add their GW_PLATFORMS entries to bring
+// them back. Platform key stays "weixin" (the backend adapter name).
 const GW_PLATFORMS = {
-  wecom: {
-    label: "WeCom 企业微信",
-    blurb: "gw-wecom-blurb",
-    steps: ["gw-wecom-s1", "gw-wecom-s2", "gw-wecom-s3"],
-    required: [
-      { key: "corp_id", label: "CorpID", secret: false, help: "gw-h-corpid" },
-      { key: "secret", label: "Secret", secret: true, help: "gw-h-wecom-secret" },
-      { key: "agent_id", label: "AgentId", secret: false, help: "gw-h-agentid" },
-      { key: "token", label: "Token", secret: true, help: "gw-h-wecom-token" },
-      { key: "encoding_aes_key", label: "EncodingAESKey", secret: true, help: "gw-h-aeskey" },
-    ],
-    recommended: [
-      { key: "to_user", label: "to_user", secret: false, help: "gw-h-touser" },
-    ],
-    advanced: [
-      { key: "host", label: "host", secret: false, help: "gw-h-wecom-host", ph: "0.0.0.0" },
-      { key: "port", label: "port", secret: false, help: "gw-h-wecom-port", ph: "8128" },
-      { key: "path", label: "path", secret: false, help: "gw-h-wecom-path", ph: "/callback/command" },
-      { key: "api_base", label: "api_base", secret: false, help: "gw-h-wecom-api-base" },
-    ],
-  },
   weixin: {
-    label: "微信 · iLink",
+    label: "gw-weixin-label",   // 微信 / WeChat (bilingual via i18n)
     blurb: "gw-weixin-blurb",
     qr: true,
     note: "gw-weixin-note",
@@ -203,45 +186,6 @@ const GW_PLATFORMS = {
       { key: "bot_type", label: "bot_type", secret: false, help: "gw-h-wx-bot-type", ph: "3" },
       { key: "long_poll_timeout_ms", label: "long_poll_timeout_ms", secret: false, help: "gw-h-wx-poll", ph: "35000" },
       { key: "api_timeout_ms", label: "api_timeout_ms", secret: false, help: "gw-h-wx-api-timeout", ph: "15000" },
-    ],
-  },
-  weixinpad: {
-    label: "微信 · WeChatPadPro",
-    blurb: "gw-wxpad-blurb",
-    note: "gw-wxpad-risk",   // ban-risk warning (unofficial iPad protocol)
-    required: [
-      { key: "host", label: "host", secret: false, help: "gw-h-wxpad-host", ph: "127.0.0.1" },
-      { key: "admin_key", label: "admin_key", secret: true, help: "gw-h-wxpad-admin" },
-    ],
-    recommended: [
-      { key: "port", label: "port", secret: false, help: "gw-h-wxpad-port", ph: "38849" },
-    ],
-    advanced: [],
-  },
-  qq: {
-    label: "QQ · OneBot",
-    blurb: "gw-qq-blurb",
-    steps: ["gw-qq-s1", "gw-qq-s2", "gw-qq-s3"],
-    required: [
-      { key: "url", label: "gw-f-qq-url", secret: false, help: "gw-h-qq-url", ph: "ws://127.0.0.1:3001" },
-      { key: "peer_id", label: "gw-f-peer-id", secret: false, help: "gw-h-peer-id" },
-    ],
-    recommended: [
-      { key: "access_token", label: "access_token", secret: true, help: "gw-h-qq-token" },
-    ],
-    advanced: [],
-  },
-  telegram: {
-    label: "Telegram",
-    blurb: "gw-tg-blurb",
-    steps: ["gw-tg-s1", "gw-tg-s2"],
-    pending: "gw-telegram-wait", // 后端 adapter 未落地（roadmap C2 NEXT）：可填可存，不能启动
-    required: [
-      { key: "bot_token", label: "gw-f-tg-token", secret: true, help: "gw-h-tg-token", ph: "gw-ph-tg-token" },
-    ],
-    recommended: [], // allowed_senders 走顶层共享行（安全理由见 gw-allowed-why）
-    advanced: [
-      { key: "proxy_url", label: "gw-f-tg-proxy", secret: false, help: "gw-h-tg-proxy", ph: "socks5://… / http://…" },
     ],
   },
 };
@@ -1389,6 +1333,15 @@ class ChatController {
             box.innerHTML = "";
             box.appendChild(el("div", { class: "gw-qr-ok" },
               t("gw-qr-confirmed", { id: r.account_id || "" })));
+            // Login saved + the weixin adapter is now ensured (backend). Start
+            // the gateway so it actually connects and receives messages — a
+            // scanned-but-never-started gateway was why nothing arrived.
+            box.appendChild(el("div", { class: "gw-blurb", style: "margin-top:6px" }, t("gw-qr-starting")));
+            try {
+              await hub.call("gateway.stop", { name }, 15000).catch(() => {});
+              await hub.call("gateway.start", { name }, 30000);
+            } catch (e) { /* the pane refresh below surfaces the state */ }
+            if (!ctrl.disposed && ctrl.panelTab === "gateway") ctrl.renderGatewayPane();
           } else if (r.status === "expired") {
             idle(el("div", { class: "gw-qr-err" }, t("gw-qr-expired")), true);
           }
