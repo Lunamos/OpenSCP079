@@ -364,8 +364,11 @@ class ChatController {
       this.client.onPermissionAsk = (p) => this.onPermission(p);
       this.client.onLifeState = (p) => this.onLifeState(p);
       this.client.onRejoinGap = () => {
+        // Ring couldn't replay (child restarted → seq reset). Just forget the
+        // stale seq; do NOT clear the stream — open() already cleared it and
+        // the attach() below renders the full restored history. Clearing here
+        // races with that render and wiped the whole history (empty-history bug).
         this.client.clearRejoin();
-        $("stream-inner").innerHTML = "";
       };
       this.client.onClose = (ev) => {
         if (!this.disposed) {
