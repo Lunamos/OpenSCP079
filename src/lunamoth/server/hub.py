@@ -1323,16 +1323,16 @@ def weixin_qr_status(meta: S.SessionMeta, qrcode_value: str) -> dict[str, Any]:
 def _gateway_status_from_disk(meta: S.SessionMeta) -> dict[str, Any]:
     path = meta.root / "messaging.json"
     platform = ""
-    enabled = False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        enabled = bool(data.get("enabled")) if isinstance(data, dict) else False
         adapters = data.get("adapters") if isinstance(data, dict) else None
         if isinstance(adapters, dict):
             platform = ",".join(sorted(str(k) for k in adapters))
     except (OSError, json.JSONDecodeError):
         pass
-    return {"platform": platform, "state": "stopped" if not enabled else "stopped", "detail": "", "pid": 0}
+    # No live supervisor: a gateway is always "stopped" on disk. Carry the
+    # error_message field so the shape matches GatewayChild.status() for the web.
+    return {"platform": platform, "state": "stopped", "detail": "", "error_message": "", "pid": 0}
 
 
 def _await_supervisor(supervisor: Any, coro):
