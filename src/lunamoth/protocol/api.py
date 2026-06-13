@@ -111,6 +111,10 @@ class CharaHandle:
         self._agent = agent or LunaMothAgent(settings)
         self._session = None
         self._snap: "tuple[float, StateSnapshot] | None" = None
+        # Latches once a human has been delivered the opener — a resident
+        # greets once per life, not once per page-load. A background (present
+        # =False) adopt never sets it, so it can't eat the human's greeting.
+        self._greeted = False
         # Visit bookkeeping: a visit is presence-true → presence-false. If the
         # operator never says a word, the visit leaves NO trace in context —
         # the arrival ceremony is rolled back and no departure note is added.
@@ -121,42 +125,60 @@ class CharaHandle:
 
     def attach(self, present: bool = True) -> AttachInfo:
         """Open (or adopt) the conversation. `present` = a human is watching;
-        a daemon attaches with present=False and adopts any queued handoff."""
+        a daemon attaches with present=False to drive idle life.
+
+        The state machine (so every frontend, and the supervisor's background
+        adopt-then-human-attach sequence, behaves identically):
+        - present=False: pure adoption — restore, set presence false, adopt a
+          queued handoff. NEVER greets and NEVER consumes the first-meeting,
+          so the daemon pre-attaching a resident can't eat the human's opener.
+        - present=True, first human this life: the greeting decision tree below
+          runs once, then `_greeted` latches.
+        - present=True, already greeted (reconnect / page reload): presence
+          fact only, opening='none' — a resident greets once per life, not per
+          page-load. `restored` is recomputed every time, so a reconnect after
+          a conversation shows that conversation (the old stale-cache bug)."""
         a = self._agent
-        self._session = a.make_session()
+        if self._session is None:
+            self._session = a.make_session()
         restored = tuple(dict(m) for m in self._session.context.messages)
         a.state.set_present(present)
-        if present:
-            a.presence.pop_event()  # discard any stale handoff — we're here now
-        else:
-            # Adopt the chara: if a detaching frontend queued a departure line,
-            # continue *knowing* the operator left. Usually already restored
-            # from the transcript — don't duplicate.
+
+        if not present:
+            # Daemon/background adoption: continue knowing the operator left.
             handoff = a.presence.pop_event()
             recent = self._session.context.messages[-3:]
             if handoff and not any(
                 m.get("role") == "system" and m.get("content") == handoff for m in recent
             ):
                 self._session.context.add("system", handoff)
-        # Entering the room never wakes a sleeper: while the chara rests
-        # (rest_until in the future), attach is presence bookkeeping only — no
-        # opening turn, no arrival prompt. A user MESSAGE always wakes; when it
-        # wakes on its own it reads user_present from the env facts and decides
-        # for itself whether your visit deserves a word.
-        if present and float(a.state.load().get("rest_until", 0.0) or 0.0) > time.time():
+                restored = tuple(dict(m) for m in self._session.context.messages)
+            return AttachInfo(
+                char_name=a.char_name(), lang=a.lang, mode=a.settings.mode,
+                show_thinking=bool(a.settings.show_thinking),
+                restored=restored, opening="none", opening_text="",
+            )
+
+        # present=True — a human is watching.
+        a.presence.pop_event()  # discard any stale handoff — we're here now
+        # Entering the room never wakes a sleeper, and a reconnect after the
+        # opener was already delivered is presence bookkeeping only.
+        resting = float(a.state.load().get("rest_until", 0.0) or 0.0) > time.time()
+        if resting or self._greeted:
             a.presence.mark_met()
+            self._greeted = True
             self._begin_visit()
             return AttachInfo(
                 char_name=a.char_name(), lang=a.lang, mode=a.settings.mode,
                 show_thinking=bool(a.settings.show_thinking),
                 restored=restored, opening="none", opening_text="",
             )
-        # The greeting decision tree, decided ONCE for every frontend:
+        # The greeting decision tree, decided ONCE per life:
         # first meeting gets the card's designed opener (SillyTavern first_mes);
         # a return visit gets the card's on_attach arrival turn; a fresh session
         # without either gets a probe; a restored session continues silently.
         greeting = a.greeting() or ""
-        attach_text = a.attach_event_text() if present else ""
+        attach_text = a.attach_event_text()
         first = a.presence.first_meeting() and not restored
         if greeting and first:
             opening, opening_text = "greeting", greeting
@@ -176,6 +198,7 @@ class CharaHandle:
             restored=restored, opening=opening, opening_text=opening_text,
         )
         a.presence.mark_met()
+        self._greeted = True
         if present:
             self._begin_visit()
         return info

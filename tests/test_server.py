@@ -251,3 +251,57 @@ def test_ws_auth_query_and_first_message():
     )
     assert not ok
     assert response["error"]["code"] == -32021
+
+
+class SlowIdleHandle(DummyHandle):
+    """A long idle turn the human should be able to supersede by speaking."""
+    def __init__(self):
+        super().__init__()
+        self.idle_closed = threading.Event()
+
+    def stream_idle(self):
+        try:
+            yield TextDelta("musing", "muse")
+            time.sleep(1.0)
+            yield TextDelta("more musing", "muse")
+        finally:
+            self.idle_closed.set()
+
+    def stream_user(self, text: str):
+        yield TextDelta("reply: ")
+        yield TextDelta(text)
+
+
+def test_human_send_supersedes_an_in_flight_idle_turn():
+    """The chara is doing its own thing (idle stream); the human sends a
+    message. That must stop the idle turn and take over, not fail with
+    'a stream is already in flight' (-32011) — the interrupt-the-chara bug."""
+    handle = SlowIdleHandle()
+    dispatch, frames = make_dispatcher(handle)
+    dispatch.dispatch({"jsonrpc": "2.0", "id": 1, "method": "attach", "params": {}})
+    # server-side idle turn begins (the chara's own work)
+    assert dispatch.dispatch({"jsonrpc": "2.0", "id": 2, "method": "idle", "params": {}}) is None
+    deadline = time.time() + 1.0
+    while time.time() < deadline and not [f for f in frames if f.get("method") == "event"]:
+        time.sleep(0.01)
+    # the human speaks mid-idle — must be accepted, not refused
+    assert dispatch.dispatch({"jsonrpc": "2.0", "id": 3, "method": "send", "params": {"text": "hi"}}) is None
+    assert handle.idle_closed.wait(1.0)  # the idle turn was wound down
+    done = wait_response(frames, 3, timeout=2.0)
+    assert done["result"]["ok"] is True
+    texts = [f["params"]["text"] for f in frames if f.get("method") == "event"]
+    assert "reply: " in texts and "hi" in texts  # the human's turn ran
+
+
+def test_two_human_turns_still_collide():
+    """Superseding is only idle→human; two human turns at once is a real
+    client bug and still errors."""
+    handle = SlowHandle()
+    dispatch, frames = make_dispatcher(handle)
+    dispatch.dispatch({"jsonrpc": "2.0", "id": 1, "method": "attach", "params": {}})
+    assert dispatch.dispatch({"jsonrpc": "2.0", "id": 2, "method": "send", "params": {"text": "a"}}) is None
+    deadline = time.time() + 1.0
+    while time.time() < deadline and not [f for f in frames if f.get("method") == "event"]:
+        time.sleep(0.01)
+    resp = dispatch.dispatch({"jsonrpc": "2.0", "id": 3, "method": "send", "params": {"text": "b"}})
+    assert resp["error"]["code"] == -32011

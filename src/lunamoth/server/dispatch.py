@@ -103,6 +103,7 @@ class JsonRpcDispatcher:
         self.handle.set_permission_hook(self._permission_hook)
         self._lock = threading.RLock()
         self._stream_thread: threading.Thread | None = None
+        self._stream_kind: str = ""  # kind of the in-flight stream (send|event|idle)
         self._stream_interrupt = threading.Event()
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._attached = False
@@ -174,21 +175,11 @@ class JsonRpcDispatcher:
     # ---- method handlers -----------------------------------------------------
 
     def _attach(self, params: dict[str, Any]) -> Any:
+        # The handle owns the attach state machine (background adopt vs first
+        # human greeting vs reconnect): forward every attach to it and it
+        # returns the right opening + a FRESH `restored` snapshot. Re-running
+        # is safe — the session is built once, the greeting latches once.
         present = bool(params.get("present", True))
-        with self._lock:
-            already = self._attached
-            info = self._attach_info
-        if already:
-            # Adoption-safe: a second attach to a live session is just presence
-            # bookkeeping and returns the original AttachInfo shape. The
-            # supervisor relies on this when a browser reconnects to a long-lived
-            # child process. The opening is neutered: a resident greets once per
-            # life, not once per page-load — re-entering the room is a presence
-            # fact, and the chara sees user_present at its next own cycle.
-            self.handle.set_present(present)
-            if info is not None:
-                return dataclasses.replace(info, opening="none", opening_text="")
-            return self.handle.attach(present=present)
         info = self.handle.attach(present=present)
         with self._lock:
             self._attached = True
@@ -308,9 +299,21 @@ class JsonRpcDispatcher:
         wants_response: bool,
         make_events: Callable[[], Iterator[Any]],
     ) -> None:
+        superseding: threading.Thread | None = None
         with self._lock:
             if self._is_streaming_locked():
-                raise RpcError(-32011, "a stream is already in flight")
+                # A human turn (send/event) supersedes the chara's own idle
+                # work: stop the idle stream and take over, rather than failing
+                # the operator with "a stream is already in flight". Two human
+                # turns at once still collide (that is a real client bug).
+                if kind in ("send", "event") and self._stream_kind == "idle":
+                    self._stream_interrupt.set()
+                    superseding = self._stream_thread
+                else:
+                    raise RpcError(-32011, "a stream is already in flight")
+        if superseding is not None:
+            superseding.join(timeout=10.0)  # let the idle turn wind down + clear
+        with self._lock:
             self._stream_interrupt.clear()
             thread = threading.Thread(
                 target=self._stream_worker,
@@ -319,6 +322,7 @@ class JsonRpcDispatcher:
                 daemon=True,
             )
             self._stream_thread = thread
+            self._stream_kind = kind
             thread.start()
 
     def _stream_worker(

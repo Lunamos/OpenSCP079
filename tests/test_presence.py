@@ -226,3 +226,41 @@ def test_reattach_does_not_replay_the_opening(agent):
     assert opening(r1) == "arrival"
     r2 = d.dispatch({"jsonrpc": "2.0", "id": 2, "method": "attach", "params": {}})
     assert opening(r2) == "none"
+
+
+def test_background_adopt_then_human_attach_still_greets(agent):
+    """The supervisor pre-attaches a resident with present=False (idle driving)
+    BEFORE the human connects. That background adopt must NOT eat the human's
+    opener — the first present=True attach still greets (regression: the
+    'greet once per life' change had neutered every human greeting)."""
+    from lunamoth.protocol.api import CharaHandle
+
+    a = agent()
+    a.state.set_rest_until(0)
+    handle = CharaHandle(agent=a)
+    bg = handle.attach(present=False)          # daemon adopts first
+    assert bg.opening == "none"
+    human = handle.attach(present=True)        # the human arrives
+    assert human.opening in ("greeting", "arrival", "probe")
+    assert human.opening_text
+    # a reconnect (second human attach) is presence-only, no re-greet
+    again = handle.attach(present=True)
+    assert again.opening == "none"
+
+
+def test_reconnect_shows_the_conversation_so_far(agent):
+    """A reconnect must restore the conversation that happened since the child
+    started (regression: the dispatch cached the empty background-attach
+    snapshot and replayed it forever)."""
+    from lunamoth.protocol.api import CharaHandle
+
+    a = agent()
+    a.state.set_rest_until(0)
+    handle = CharaHandle(agent=a)
+    handle.attach(present=False)
+    handle.attach(present=True)
+    list(handle.stream_user("记住：项目代号 Moth"))   # a real exchange lands in context
+    reattached = handle.attach(present=True)          # navigate away and back
+    joined = " ".join(c for _, c in [(m.get("role"), m.get("content") or "")
+                                     for m in [dict(x) for x in reattached.restored]])
+    assert "项目代号 Moth" in joined

@@ -1016,14 +1016,8 @@ class ChatController {
         await this.command(`/mode ${this.mode}`, true);
       },
     }));
-    st.appendChild(this.prow({
-      label: t("p-thinking"), sub: t("p-thinking-sub"),
-      switchOn: !!this.showThinking,
-      onSwitch: async () => {
-        this.showThinking = !this.showThinking;
-        await this.command(`/thinking ${this.showThinking ? "on" : "off"}`, true);
-      },
-    }));
+    // No show-thinking toggle: the thinking block is always rendered and
+    // expandable in-line (click to reveal), so an on/off switch is redundant.
     const gw = entry && entry.gateway;
     st.appendChild(this.prow({
       label: t("p-gateway"),
