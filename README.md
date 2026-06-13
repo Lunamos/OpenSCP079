@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="LunaMoth — The Character That Lives With You" width="100%">
+  <img src="assets/banner.png" alt="LunaMoth — Original Character That Lives With You" width="100%">
 </p>
 
 <p align="center"><i>An agentic character tavern — character cards (each carrying its world inside), tool packs, and hard limits, composed at launch.</i></p>
@@ -33,43 +33,13 @@ It borrows the best of three worlds: the agent runtime of [Hermes](https://githu
 
 ## Roadmap
 
-- [x] SillyTavern-compatible character cards; standalone world books import by merging into a card's embedded `character_book`
-- [x] Composable tool packs with native tool calling
-- [x] Bounded auditable memory, single-terminal split TUI
-- [x] **One-line installer & `lunamoth` CLI** — `curl | bash`, setup wizard, self-update
-- [x] **Named sessions** — `lunamoth new/ls/attach/rm`, each with its own config & sandbox
-- [x] **Isolation selector** — `dir` / `sandbox` (OS jail: sandbox-exec / bubblewrap) / `docker` per session
-- [x] **Language-agnostic `terminal` tool** — shell commands under the session's isolation, with a runtime network toggle (`/net on`)
-- [x] **Character-driven config** — language, world, tools and limits all come from the card; the engine stays character-neutral, and plain SillyTavern imports get safe defaults
-- [x] **Resume-first launcher & persistent charas** — `lunamoth` opens a blue roster of your agents; each lives in the background (`start` / `start-all` / `stop`), you attach & detach instead of create & kill
-- [x] **Presence awareness & interaction modes** — the chara feels you attach/detach via card-declared `on_attach`/`on_detach` prompts; one per-chara `/mode live|chat` decides how it behaves while you watch (live: keeps creating, with a post-greeting grace; chat: waits and only replies); while you're present it can `request_permission` (network / paths / resources, timeout = deny), while you're away requests auto-deny
+The foundations are in place — SillyTavern-compatible cards & world books, composable tool packs with native tool calling, sandboxed execution, persistent background charas with presence & `live`/`chat` modes, transcript + bounded memory, self-written skills, MCP, goals, the honest-failure policy, the typed event protocol, the three-zone prompt stack, the desktop app, and messaging gateways. What's left is mostly the charas themselves:
 
-Each unchecked item below is scoped to be independently completable — it lists the modules it touches, and two items that don't share a module can be worked on in parallel.
-
-- [x] **Transcript persistence** — every context line (and tool call) lands in a per-chara SQLite transcript (WAL, adapted from hermes-agent) as it happens; attach restores the conversation and shows the tail, daemons adopt it on handoff, `/reset` starts a new epoch (old history stays on disk)
-
-- [x] **Hermes-grade context management** — full message dicts in the durable history (assistant tool calls, tool results and reasoning survive restarts, so the chara remembers what it ran); interrupts commit the partial turn and never lose your instruction; output-limit truncation gets explicit continue/split-it prompts instead of silent cuts; old idle monologues age out of the API view so self-talk can't bury your last instruction
-
-- [x] **Skills, self-written** — SKILL.md know-how (hermes/Anthropic format) with progressive disclosure: the index rides the prompt, `read_skill` fetches full text, and the chara distills its OWN skills with `create_skill` (its `workspace/skills/` shadows `~/.lunamoth/skills/` and bundled ones)
-- [x] **MCP client** — drop a Claude-Code-format `mcp.json` next to the chara's config (stdio servers); tools join the gateway as `mcp__server__tool` with the same audit trail, packs opt in via `mcp_servers`. Note: MCP servers run OUTSIDE the sandbox jail — configuring one is a trust decision
-- [x] **Goal-driven charas** — a persistent per-chara goal list (`/goal` for the operator's ⭑ goals; `add_goal`/`set_goal_status` tools for the chara's own) steers every turn and gives unattended time its direction; completion is self-reported under the honesty rules — no SillyTavern-Objective-style double API calls
-- [x] **Honest failure policy** — transient connection failures retry every 5s up to 5 times (Claude-Code style, with dim retry notices), then the error surfaces as-is; permanent errors (auth, bad request) surface immediately. NO fallback model and NO fabricated output anywhere — a failed request is a failed request
-- [x] **Diagnostic logging** — `sandbox/logs/lunamoth.log` + `errors.log` per chara (rotating, credential-redacting, chara-tagged records), an in-memory ring behind `/panel log`, `--debug` at every entry point, `lunamoth doctor` lists each chara's log dir. Diagnostics, the audit trail and the transcript stay three separate records
-- [x] **Typed event protocol** — the backend streams frozen-dataclass events (`TextDelta`/`ThinkDelta`/`ToolStart`/`ToolEnd`/`Notice`) instead of in-band control characters; each frontend decides rendering (dim machinery, ✶-hidden thinking). `lunamoth run NAME -p "…" --stream-json` emits the same events as JSONL — the wire format for every future client
-- [x] **Frontend/backend separation** — domain packages (`core/ protocol/ content/ tools/ obs/ session/ front/`) with the dependency direction enforced by tests; frontends hold a `CharaHandle` (attach/streams/commands/snapshot) and can't reach deeper; `/commands` live in ONE registry shared by the TUI and the plain terminal. (design absorbed into `CLAUDE.md`)
-- [x] **A life of its own: speak channel, engagement, time sense** — unattended output is the chara's own (`muse` channel); the `speak` tool is how it DECIDES to reach you (the basis for future messaging frontends: Telegram/WeChat deliver only what it speaks). While you're talking it sets its work aside and resumes after `/quiet <seconds>` of silence (default 5 min). It feels real time without polluting context: unattended ticks carry only a wall-clock timestamp (ephemeral), a long silence gets ONE gap note, the date rides the env facts — and it paces itself with the `rest` tool (1–120 min; your message always wakes it)
-- [x] **Chara knobs: patience + embodiment** — cards can declare base spontaneous-cycle patience (`extensions.lunamoth.patience`, with `/patience` override) and an embodiment stance (`literal` digital being or `actor` with real tools backstage), chosen when the chara is woken; existing cards stay literal by default
-- [x] **Three-zone prompt stack & card-first context** — stable prefix / durable history / volatile tail are assembled explicitly for every API call: the prefix stays byte-identical for prompt cache, card PHI is the final post-history system slot, constant world info is stable while keyword lore shallow-scans the recent tail with sticky turns and a 25% budget cap, and compaction summaries persist into the transcript so restarts resume from the checkpoint.
-
-**Compatibility & extensibility**
-
-- [ ] **World info parity** — close the remaining gap to SillyTavern activation: recursive scanning, cooldown/delay, insertion position/depth, probability, case-sensitive & whole-word matching. *Touches: `content/worldinfo.py` (+ its call sites' signatures stay stable).*
-- [ ] **Declarative tool registry** — replace hardcoded `ToolGateway.tool_*` methods + inline schemas with Hermes-style registration (name, schema, handler, availability check), so new tools are one self-contained module. *Touches: `tools/gateway.py` → per-module registration in `tools/builtin/`.*
-
-**Remote access** (ordered — each builds on the previous)
-
-- [ ] **Remote TUI** — beyond the `ssh host -t lunamoth attach NAME` baseline: a gateway for public-IP/VPS access (high priority). *Touches: new `server/` package serving the protocol events + `CharaHandle` over stdio/WebSocket JSON-RPC; builds on `SessionMeta.env()`.*
-- [ ] **Web UI** — remote browser access to running sessions (low priority). *Touches: new web module; consumes the gateway.*
+- **The chara curriculum** *(the biggest effort)* — neutral prompt guidance so any worldview and any character can live well: how to use tools, treat goals, and spend unattended time — suggestions, never orders. (Embodiment `literal`/`actor` shipped; next: cross-worldview eval cards and a curated browse path for curiosity.)
+- **Card studio & market** — faster inspiration→living-chara in the web deck, and a shareable card/pack index (ST PNG import already works).
+- **Hermes-parity burn-down & a declarative tool registry** — port hermes's hardening, and replace the hardcoded `ToolGateway.tool_*` methods with per-module registration in `tools/builtin/`.
+- **World-info parity** — recursive scan, cooldown/delay, insertion position/depth, probability, whole-word matching. *Touches `content/worldinfo.py`.*
+- **Messaging & remote** — live-test the gateways with real credentials; a remote TUI client over the gateway.
 
 ## Features
 
