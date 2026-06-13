@@ -202,7 +202,10 @@ function lifeAttr(life) {
 class ChatController {
   constructor(name, opts) {
     this.name = name;
-    this.opts = opts;
+    this.opts = opts || {};
+    // Open straight to a given right-panel tab once (e.g. the global gateway
+    // view's "manage" deep-links to the gateway tab), then default to status.
+    this._initialPanelTab = (opts && opts.panelTab) || null;
     this.client = new CharaClient(name);
     this.charName = name;
     this.deckCard = cardForSession(name);
@@ -985,7 +988,8 @@ class ChatController {
     this.stopQrPoll();
     this._panelSig = "";
     document.querySelectorAll(".panel-pane").forEach((p) => { p.innerHTML = ""; });
-    this.showPanelTab("status");
+    this.showPanelTab(this._initialPanelTab || "status");
+    this._initialPanelTab = null;
   }
 
   showPanelTab(which) {

@@ -222,6 +222,7 @@ function show(view) {
   document.querySelectorAll(".nav-item").forEach((n) =>
     n.classList.toggle("active", n.dataset.view === (view === "chat" ? "board" : view)));
   if (view === "board" || view === "deck") refreshHub();
+  if (view === "gateways") renderGateways();
 }
 
 function route() {
@@ -243,7 +244,7 @@ function route() {
     return;
   }
   if (state.chat) { state.chat.dispose(); state.chat = null; }
-  show(h === "#/deck" ? "deck" : h === "#/settings" ? "settings" : "board");
+  show(h === "#/deck" ? "deck" : h === "#/gateways" ? "gateways" : h === "#/settings" ? "settings" : "board");
 }
 window.addEventListener("hashchange", route);
 
@@ -254,6 +255,92 @@ function openChat(name, opts) {
   state.pendingChatOpts = opts || null;
   navTo(`#/chara/${encodeURIComponent(name)}`);
 }
+
+/* ============================ 网关总览（所有角色 × 网关，与角色面板同数据） ============================ */
+function gwPlatLabel(platform) {
+  if (!platform) return t("gw-none");
+  if (typeof GW_PLATFORMS !== "undefined" && GW_PLATFORMS[platform]) return t(GW_PLATFORMS[platform].label);
+  return platform;
+}
+
+function gwStatusBits(gw) {
+  const st = (gw && gw.state) || "stopped";
+  return {
+    text: st === "running" ? t("gw-running") : st === "needs_login" ? t("gw-needs-login") : t("gw-stopped"),
+    cls: st === "running" ? "ok" : st === "needs_login" ? "warn" : "",
+  };
+}
+
+async function renderGateways() {
+  const host = $("gw-overview");
+  if (!host) return;
+  if (!state.hub) { try { await refreshHub(); } catch (e) { /* surfaced below */ } }
+  host.innerHTML = "";
+  let data;
+  try { data = await hub.call("gateways.list", {}, 20000); }
+  catch (e) { host.appendChild(el("div", { class: "gw-error" }, rpcErrText(e))); return; }
+  const rows = (data && data.gateways) || [];
+  const byName = {};
+  for (const s of (state.hub ? state.hub.sessions : [])) byName[s.name] = s;
+  const configured = rows.filter((r) => r.enabled || (r.gateway && r.gateway.platform));
+  $("gw-count").textContent = configured.length ? String(configured.length) : "";
+  if (!configured.length) {
+    host.appendChild(el("div", { class: "empty-state" },
+      el("p", null, t("gw-empty")),
+      el("button", { class: "btn primary", onclick: openNewGateway }, t("gw-new"))));
+    return;
+  }
+  for (const r of configured) host.appendChild(gatewayCard(r, byName[r.name] || { char_name: r.name }));
+}
+
+function gatewayCard(r, sess) {
+  const gw = r.gateway || {};
+  const bits = gwStatusBits(gw);
+  const sw = el("button", { class: "switch" + (r.enabled ? " on" : "") });
+  sw.onclick = async () => {
+    if (sw.disabled) return;
+    sw.disabled = true;
+    const turnOn = !r.enabled;
+    sw.classList.toggle("on", turnOn);   // optimistic
+    try { await hub.call(turnOn ? "gateway.start" : "gateway.stop", { name: r.name }, 30000); renderGateways(); }
+    catch (e) { sw.classList.toggle("on", !turnOn); sw.disabled = false; toast(rpcErrText(e), true); }
+  };
+  return el("div", { class: "gw-card" },
+    el("div", { class: "gw-card-head" },
+      el("span", { class: "gw-plat-name" }, gwPlatLabel(gw.platform)),
+      el("span", { class: "gw-chip " + bits.cls }, bits.text)),
+    el("div", { class: "gw-card-sub" }, t("gw-bound") + "：" + (sess.char_name || r.name)),
+    gw.detail ? el("div", { class: "gw-card-detail" }, gw.detail) : null,
+    el("div", { class: "gw-card-foot" },
+      sw, el("span", { class: "enable-lbl" }, r.enabled ? t("gw-enabled") : t("gw-disabled")),
+      el("div", { class: "grow" }),
+      el("button", { class: "btn soft", onclick: () => openChat(r.name, { panelTab: "gateway" }) }, t("gw-manage"))));
+}
+
+function openNewGateway() {
+  // Step 1: a new gateway always binds to a chara — pick one, then deep-link to
+  // its gateway tab where login/config (and, per platform, the QR) live.
+  closePopovers();
+  const sessions = (state.hub && state.hub.sessions) || [];
+  if (!sessions.length) { toast(t("gw-no-chara"), true); return; }
+  const pop = el("div", { class: "popover gw-newpop" });
+  pop.appendChild(el("h4", null, t("gw-pick-chara")));
+  for (const s of sessions) {
+    pop.appendChild(el("button", { class: "gw-pick-row", onclick: () => { pop.remove(); openChat(s.name, { panelTab: "gateway" }); } },
+      s.char_name || s.name));
+  }
+  document.body.appendChild(pop);
+  const btn = $("gw-new");
+  if (btn) {
+    const rc = btn.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = `${rc.bottom + 6}px`;
+    pop.style.right = `${window.innerWidth - rc.right}px`;
+  }
+}
+
+if ($("gw-refresh")) $("gw-refresh").addEventListener("click", renderGateways);
+if ($("gw-new")) $("gw-new").addEventListener("click", openNewGateway);
 
 /* ============================ SPLITTERS（左右栏都可拖宽） ============================ */
 function makeSplit(handle, target, cssVar, storeKey, opts) {

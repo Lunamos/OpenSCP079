@@ -788,6 +788,18 @@ details.cv-raw pre{
 .gw-chip.ok{background:rgba(47,191,90,.12); color:#1E8A43}
 .gw-chip.warn{background:rgba(217,147,13,.12); color:var(--amber)}
 .gw-blurb{font-size:12px; color:var(--text-2); line-height:1.6; margin-bottom:12px}
+/* 网关总览页 */
+.gw-overview{flex:1; overflow:auto; padding:20px 24px; display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; align-content:start}
+.gw-card{border:1px solid var(--hairline); border-radius:var(--radius); padding:14px 16px; background:var(--panel); display:flex; flex-direction:column; gap:8px}
+.gw-card-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.gw-plat-name{font-weight:600; font-size:14px; color:var(--text)}
+.gw-card-sub{font-size:12px; color:var(--text-2)}
+.gw-card-detail{font-size:11px; color:var(--text-3); line-height:1.5}
+.gw-card-foot{display:flex; align-items:center; gap:8px; margin-top:4px}
+.gw-card-foot .enable-lbl{font-size:11px; color:var(--text-2)}
+.gw-newpop{min-width:200px; max-height:60vh; overflow:auto; padding:10px}
+.gw-pick-row{display:block; width:100%; text-align:left; padding:8px 10px; border-radius:8px; background:none; border:none; color:var(--text); font-size:13px; cursor:pointer}
+.gw-pick-row:hover{background:rgba(91,159,212,.16)}
 .gw-error{
   font-size:11.5px; color:var(--red); background:rgba(229,72,77,.08); border-radius:8px;
   padding:7px 10px; margin-bottom:12px; line-height:1.55; overflow-wrap:anywhere;

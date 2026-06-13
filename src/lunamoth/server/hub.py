@@ -2014,6 +2014,16 @@ class HubDispatcher:
             # Live query: ask the in-child host whether it is actually running,
             # waiting for a QR (needs_login), or stopped — not a heuristic.
             return _await_supervisor(self.supervisor, self.supervisor.gateway_status_live(meta.name))
+        if method == "gateways.list":
+            # Global gateway view: live status for every chara, one source of
+            # truth shared with the per-chara panel.
+            if self.supervisor is None:
+                return {"gateways": [
+                    {"name": m.name, "enabled": bool((_read_messaging(m) or {}).get("enabled")),
+                     "gateway": _gateway_status_from_disk(m)}
+                    for m in S.list_sessions()
+                ]}
+            return _await_supervisor(self.supervisor, self.supervisor.gateways_all_live())
         if method == "superchat.read":
             meta = self._meta(p)
             return set_superchat_read(meta, float(p.get("ts") or 0.0))

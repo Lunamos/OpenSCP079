@@ -1078,6 +1078,18 @@ class Supervisor:
             return None
         return await self.gateway(name).status_live()
 
+    async def gateways_all_live(self) -> dict[str, Any]:
+        """Live gateway status for EVERY chara — the global gateway view's one
+        source of truth (the same status_live() the per-chara pane uses, so the
+        overview and the in-chara panel never disagree)."""
+        out: list[dict[str, Any]] = []
+        for meta in S.list_sessions():
+            gw = self.gateway(meta.name)
+            with contextlib.suppress(Exception):
+                status = await gw.status_live()
+                out.append({"name": meta.name, "enabled": gw.enabled(), "gateway": status})
+        return {"gateways": out}
+
     async def bootstrap_gateways(self) -> None:
         for meta in S.list_sessions():
             gw = self.gateway(meta.name)
