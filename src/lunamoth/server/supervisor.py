@@ -399,6 +399,12 @@ class CharaChild:
                 stderr=log,
                 env=env,
                 cwd=str(APP_DIR),
+                # One JSON frame per line; an attach response carries the whole
+                # restored history, which easily exceeds asyncio's default 64KB
+                # readline limit. Without a bigger limit, readline() raises on a
+                # large chara's attach, the response never arrives, and the chat
+                # hangs with an empty history. Match the WS frame ceiling (16MB).
+                limit=16 * 1024 * 1024,
             )
             log.close()
             self.state, self.detail = "running", ""
@@ -446,7 +452,16 @@ class CharaChild:
         assert proc is not None and proc.stdout is not None
         try:
             while True:
-                line = await proc.stdout.readline()
+                try:
+                    line = await proc.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError):
+                    # A frame somehow still exceeded the (large) line limit:
+                    # skip the unreadable chunk rather than letting the reader
+                    # die — a silently-dead reader is what hung attach before.
+                    _log.warning("oversized stdout frame from %s skipped", self.name)
+                    with contextlib.suppress(Exception):
+                        await proc.stdout.readuntil(b"\n")
+                    continue
                 if not line:
                     break
                 try:
