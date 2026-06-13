@@ -167,6 +167,12 @@ class MessagingHost:
                 _log.exception("messaging relay turn failed")
 
     def _allowed_sender(self, sender_id: str) -> bool:
+        # An empty allow-list means OPEN — anyone can reach the chara (this is
+        # what the gateway pane's field help promises: "leave empty and anyone
+        # can summon your chara"). Add senders to RESTRICT. Without this the
+        # gateway refused everyone out of the box even though you just logged in.
+        if not self._allowed:
+            return True
         return sender_id in self._allowed or "*" in self._allowed
 
     def _process(self, adapter: Adapter, msg: InboundMessage) -> None:

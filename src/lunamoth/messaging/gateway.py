@@ -256,6 +256,10 @@ class MessagingGateway:
         self._inbox.put(_Envelope(adapter, message))
 
     def _allowed(self, sender_id: str) -> bool:
+        # Empty allow-list = OPEN (the gateway pane's field help promises this:
+        # "leave empty and anyone can summon your chara"). Add senders to RESTRICT.
+        if not self.allowed_senders:
+            return True
         return sender_id in self.allowed_senders or "*" in self.allowed_senders
 
     def _process_inbound(self, adapter: Adapter, msg: InboundMessage) -> None:

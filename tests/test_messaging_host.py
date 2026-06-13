@@ -87,6 +87,22 @@ def test_wechat_turn_shares_agent_say_to_adapter_events_to_transport():
     assert "tool_start" in kinds and "think" in kinds
 
 
+def test_wechat_empty_allowlist_is_open():
+    # Empty allowed_senders = open (matches the field help). Out of the box,
+    # the chara must answer — not refuse everyone.
+    handle = _Handle()
+    adapter = _Adapter()
+    frames: list[dict] = []
+    dispatch = JsonRpcDispatcher(frames.append, handle=handle)
+    host = MessagingHost(dispatch, "/tmp/x.json")
+    dispatch.set_messaging_host(host)
+    host._allowed = set()   # nothing configured
+
+    host._process(adapter, InboundMessage("anyone", "Stranger", "hi"))
+    assert handle.user_calls == ["hi"]
+    assert adapter.sent == ["hi there"]
+
+
 def test_wechat_unauthorized_sender_refused_not_run():
     handle = _Handle()
     adapter = _Adapter()
