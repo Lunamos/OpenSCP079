@@ -151,13 +151,15 @@ class MessagingGateway:
         adapters: list[Adapter] | None = None,
         *,
         allowed_senders: list[str] | set[str] | tuple[str, ...] = (),
-        patience: float = 2.0,
+        patience: float | None = None,
         refusal_text: str = DEFAULT_REFUSAL,
     ) -> None:
         self.handle = handle or CharaHandle()
         self.adapters = list(adapters or [])
         self.allowed_senders = {str(s) for s in allowed_senders}
-        self.patience = max(0.0, float(patience))
+        # None / missing → the chara's safe default (600s). NEVER a tiny default:
+        # a 2s spontaneous cadence once burned a real key's daily limit.
+        self.patience = max(0.0, float(600.0 if patience is None else patience))
         self.refusal_text = refusal_text
         self._inbox: "queue.Queue[_Envelope]" = queue.Queue()
         self._threads: list[threading.Thread] = []
@@ -171,7 +173,7 @@ class MessagingGateway:
         self._dedup = MessageDeduplicator()
 
     @classmethod
-    def from_config(cls, config: dict[str, Any], *, handle: CharaHandle | None = None, patience: float = 2.0) -> "MessagingGateway":
+    def from_config(cls, config: dict[str, Any], *, handle: CharaHandle | None = None, patience: float | None = None) -> "MessagingGateway":
         allowed = config.get("allowed_senders", [])
         if not isinstance(allowed, list):
             raise ValueError("messaging.json field 'allowed_senders' must be a list")

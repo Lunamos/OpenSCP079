@@ -449,8 +449,14 @@ def cmd_gateway(args: argparse.Namespace) -> int:
         from ..messaging.gateway import MessagingGateway, load_config
 
         cfg = load_config()
+        # The gateway respects the chara's own cadence: explicit --patience wins,
+        # else the chara's configured patience, else the safe 600s default.
+        patience = args.patience
+        if patience is None:
+            from ..session.settings import load_settings
+            patience = getattr(load_settings(), "patience", None)
         print(f"messaging gateway for {args.name!r}: starting {', '.join(cfg.get('adapters', {}).keys())}", file=sys.stderr)
-        MessagingGateway.from_config(cfg, patience=args.patience).run()
+        MessagingGateway.from_config(cfg, patience=patience).run()
         return 0
     except FileNotFoundError:
         # No messaging.json: a configuration problem, not a transient crash —
