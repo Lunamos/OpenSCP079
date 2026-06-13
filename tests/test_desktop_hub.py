@@ -522,11 +522,48 @@ def test_works_list_reads_sandbox_tree():
     (ws / "aurora.html").write_text("<html>", encoding="utf-8")
     (meta.sandbox_dir / "logs").mkdir(exist_ok=True)
     (meta.sandbox_dir / "logs" / "noise.log").write_text("x", encoding="utf-8")
+    skills = meta.sandbox_dir / "workspace" / "skills" / "make-art"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("# how-to", encoding="utf-8")
     works = result("works.list", {"name": entry["name"]})
     names = [w["name"] for w in works]
     assert "aurora.html" in names
     assert "noise.log" not in names  # logs are diagnostics, not works
+    assert "SKILL.md" not in names  # skills are know-how, not works
     assert works[0]["kind"] == "web"
+
+
+def test_works_list_scans_only_workspace_not_legacy_files():
+    set_defaults()
+    entry = result("session.wake", {"card": luna_card_path()})
+    meta = S.load_session(entry["name"])
+    legacy = meta.sandbox_dir / "files"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "ghost.txt").write_text("residue", encoding="utf-8")
+    works = result("works.list", {"name": entry["name"]})
+    assert "ghost.txt" not in [w["name"] for w in works]
+
+
+def test_works_read_refuses_legacy_files_path():
+    set_defaults()
+    entry = result("session.wake", {"card": luna_card_path()})
+    meta = S.load_session(entry["name"])
+    (meta.sandbox_dir / "files").mkdir(parents=True, exist_ok=True)
+    (meta.sandbox_dir / "files" / "ghost.txt").write_text("residue", encoding="utf-8")
+    err = rpc_error("works.read", {"name": entry["name"], "rel": "files/ghost.txt"})
+    assert err["code"] == -32031
+
+
+def test_works_read_serves_workspace_file():
+    set_defaults()
+    entry = result("session.wake", {"card": luna_card_path()})
+    meta = S.load_session(entry["name"])
+    ws = meta.sandbox_dir / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "poem.md").write_text("# aurora", encoding="utf-8")
+    got = result("works.read", {"name": entry["name"], "rel": "workspace/poem.md"})
+    assert got["kind"] == "text"
+    assert got["content"] == "# aurora"
 
 
 def test_open_path_refuses_outside_home():

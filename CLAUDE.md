@@ -150,7 +150,9 @@ zero internal deps; `obs/` imports only `config`.
   theme files are user-supplied — no bundled themes dir).
 - `tools/` — the tool domain: `gateway.py` (`ToolGateway`, allowlisted dispatch,
   `call(name, /)` positional-only), `runner.py` (terminal under dir/sandbox/docker),
-  `sandbox.py`, `mcp.py` (stdio JSON-RPC client), `skills.py` (SKILL.md +
+  `sandbox.py` (ONE working dir — `workspace/`; write_file/read_file/list_files
+  and the terminal share it; the legacy split `files/` tree is gone, folded
+  into `workspace/` on first sandbox touch), `mcp.py` (stdio JSON-RPC client), `skills.py` (SKILL.md +
   create_skill self-improvement), `goals.py`, `memory.py` (frozen-snapshot
   two-store), `toolpacks.py`. Chara-life tools: `speak` (deliver to the user),
   `rest` (self-paced wake, 1–120min), `request_permission` (presence-gated).
