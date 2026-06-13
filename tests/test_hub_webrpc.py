@@ -220,13 +220,17 @@ class FakeWeixinAPI:
         return self.status_response
 
 
-def test_weixin_qr_returns_value_img_and_fallback(monkeypatch):
+def test_weixin_qr_encodes_the_scan_content_not_the_polling_token(monkeypatch):
+    """The QR must encode qrcode_img_content (what the phone scans), while
+    `qrcode` is only the polling token for qr_status. Encoding the polling
+    token was the bug that made the QR 'scan to nothing'."""
     meta = wake_session()
     import lunamoth.messaging.weixin as W
     monkeypatch.setattr(W, "WeixinAPI", FakeWeixinAPI)
     out = result("weixin.qr", {"name": meta.name})
-    assert out["qrcode"] == "QR-VALUE" and out["img"] == "aWNvbg=="
-    assert "QR-VALUE" in out["fallback_url"]
+    assert out["qrcode"] == "QR-VALUE"            # polling token, used by qr_status
+    assert out["scan_content"] == "aWNvbg==" and out["img"] == "aWNvbg=="  # scannable content
+    assert "aWNvbg" in out["fallback_url"] and "QR-VALUE" not in out["fallback_url"]
     assert FakeWeixinAPI.last.bot_type  # a bot_type was always passed
 
 

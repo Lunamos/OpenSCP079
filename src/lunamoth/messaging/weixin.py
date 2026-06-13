@@ -369,7 +369,12 @@ class WeixinAdapter(Adapter):
                 except OSError:
                     pass
 
-    def _print_login_qr(self, qrcode_value: str) -> None:
+    def _print_login_qr(self, scan_content: str) -> None:
+        # IMPORTANT: encode `qrcode_img_content` (the scannable login payload),
+        # NOT `qrcode` (which is only the polling token). Encoding the polling
+        # token is why a hand-rolled QR "scans to nothing" — see AstrBot's
+        # weixin_oc adapter, which encodes qrcode_img_content and polls with
+        # qrcode.
         print(
             "WeChat iLink login: scan this QR with your phone WeChat / "
             "微信 iLink 登录：请用手机微信扫码。",
@@ -380,7 +385,7 @@ class WeixinAdapter(Adapter):
             import qrcode  # type: ignore[import-not-found]
 
             qr = qrcode.QRCode(border=1)
-            qr.add_data(qrcode_value)
+            qr.add_data(scan_content)
             qr.make(fit=True)
             qr.print_ascii(out=self._output, tty=False, invert=True)
         except ImportError:
@@ -392,15 +397,16 @@ class WeixinAdapter(Adapter):
             )
         except Exception as e:
             _log.debug("failed to render WeChat login QR as ASCII: %s", e)
-        print(f"WeChat QR fallback URL / 微信二维码备用链接: {qr_fallback_url(qrcode_value)}", file=self._output, flush=True)
+        print(f"WeChat QR fallback URL / 微信二维码备用链接: {qr_fallback_url(scan_content)}", file=self._output, flush=True)
 
     def _login(self) -> None:
         for refresh in range(QRCODE_REFRESHES + 1):
             data = self._api.get_bot_qrcode(self.bot_type)
-            qrcode_value = _str_field(data, "qrcode")
-            if not qrcode_value:
-                raise RuntimeError("WeChat iLink login returned no qrcode")
-            self._print_login_qr(qrcode_value)
+            qrcode_value = _str_field(data, "qrcode")          # polling token
+            scan_content = _str_field(data, "qrcode_img_content")  # what the phone scans
+            if not qrcode_value or not scan_content:
+                raise RuntimeError("WeChat iLink login returned no qrcode / qrcode_img_content")
+            self._print_login_qr(scan_content)
             if refresh:
                 _log.info("WeChat iLink QR refreshed (%s/%s)", refresh, QRCODE_REFRESHES)
             deadline = self._monotonic() + QRCODE_VALID_SECONDS

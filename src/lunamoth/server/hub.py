@@ -1294,12 +1294,16 @@ def weixin_qr(meta: S.SessionMeta) -> dict[str, Any]:
         data = api.get_bot_qrcode(bot_type)
     except Exception as exc:  # noqa: BLE001 - surface, never fabricate
         raise RpcError(-32062, f"weixin qr fetch failed: {exc}") from exc
-    qrcode_value = str(data.get("qrcode") or "")
-    if not qrcode_value:
-        raise RpcError(-32062, f"weixin returned no qrcode: {data}")
+    qrcode_value = str(data.get("qrcode") or "")          # polling token (qr_status)
+    scan_content = str(data.get("qrcode_img_content") or "")  # what the phone scans
+    if not qrcode_value or not scan_content:
+        raise RpcError(-32062, f"weixin returned no qrcode/qrcode_img_content: {data}")
+    # The web renders a QR from `scan_content`; `qrcode` only drives qr_status.
+    # Encoding the polling token (the old bug) made the QR scan to nothing.
     return {"qrcode": qrcode_value,
-            "img": str(data.get("qrcode_img_content") or ""),
-            "fallback_url": qr_fallback_url(qrcode_value)}
+            "scan_content": scan_content,
+            "img": scan_content,
+            "fallback_url": qr_fallback_url(scan_content)}
 
 
 def weixin_qr_status(meta: S.SessionMeta, qrcode_value: str) -> dict[str, Any]:
