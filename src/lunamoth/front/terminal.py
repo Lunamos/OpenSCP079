@@ -243,44 +243,46 @@ def main(argv: list[str] | None = None) -> int:
                 if stripped in {'/quit', '/exit'}:
                     print('shutting down.')
                     break
-                if stripped == '/toggle_think':
-                    state.eternal = not state.eternal
-                    print(f'eternal thinking = {state.eternal}')
-                    _prompt()
-                    continue
-                if stripped == '/pause_think':
-                    state.eternal = False
-                    print('eternal thinking = False')
-                    _prompt()
-                    continue
-                if stripped == '/resume_think':
-                    state.eternal = True
-                    print('eternal thinking = True')
-                    _prompt()
-                    continue
-                if stripped.startswith(('/set_patience ', '/set_cooldown ')):
-                    try:
-                        base_patience = max(0.0, float(stripped.split(maxsplit=1)[1]))
-                        print(f'patience = {base_patience}s')
-                    except Exception as e:
-                        print(f'bad patience: {e}')
-                    _prompt()
-                    continue
                 if stripped == '/help':
                     print("\n".join(f"{c.usage:<34} {c.help}" for c in handle.commands()))
-                    print('plain-terminal extras: /toggle_think /pause_think /resume_think /set_patience <sec> /exit')
+                    print('plain-terminal extras: /exit (autonomy is /mode live|chat; pacing is /patience <sec>)')
                     _prompt()
                     continue
                 if stripped.startswith('/'):
                     # Backend commands run through the shared registry — same
-                    # behavior and help text as every other frontend.
-                    print(handle.command(stripped).text, flush=True)
+                    # behavior and help text as every other frontend. The plain
+                    # loop holds two runtime mirrors of persisted settings
+                    # (`state.eternal` = the idle gate, `base_patience` = the
+                    # cooldown); re-sync them from the Reply so /mode and
+                    # /patience here behave exactly as on the web/TUI. Autonomy is
+                    # the ONE switch /mode live|chat — there is no separate pause.
+                    reply = handle.command(stripped)
+                    print(reply.text, flush=True)
+                    data = reply.data if isinstance(reply.data, dict) else {}
+                    if interactive and "mode" in data:
+                        state.eternal = normalize_mode(data["mode"]) == "live"
+                    if "patience" in data:
+                        try:
+                            base_patience = max(0.0, float(data["patience"]))
+                        except (TypeError, ValueError):
+                            pass
                     state.reset_idle_backoff()
                     _prompt()
                     continue
                 last_user_at = time.monotonic()
                 state.reset_idle_backoff()
-                _, interrupt = _stream_with_interrupt(reply_pfx, handle.stream_user(line), allow_interrupt=True)
+                # An operator turn surfaces a failed request as a visible error
+                # (no fallback, per design) but must NOT crash the loop — the
+                # process is also the daemon driver, and an interactive operator
+                # should be able to retry. Idle cycles keep their own backoff.
+                try:
+                    _, interrupt = _stream_with_interrupt(reply_pfx, handle.stream_user(line), allow_interrupt=True)
+                except RuntimeError as e:
+                    message = str(e)
+                    _log.error("model error during operator turn: %s", message[:200])
+                    print(f"\n\x1b[31m[model error: {message}]\x1b[0m", flush=True)
+                    _prompt()
+                    continue
                 if interrupt is not None:
                     pending_line = interrupt
                     continue
