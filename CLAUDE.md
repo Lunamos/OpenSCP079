@@ -63,6 +63,13 @@ example) and Quinn 小Q (the default).)
   never a personality, never commands about what to want.
 - **Language is never a setting** — it's a property of the active card.
 - **The model's real context window is never a setting** (providers.py).
+- **Every UI action responds instantly; every API call shows progress.**
+  (front/web, binding.) A click flips its own control's state IMMEDIATELY
+  (optimistic), before any round-trip — no dead clicks, no frozen buttons.
+  Anything that calls the model / an API shows a "working / thinking" state
+  with a loading animation (spinner, "思考 Ns", pulsing line) until it
+  resolves; on failure the optimistic state reverts and the error surfaces.
+  Silent waits are a bug.
 
 ## Run / dev / test
 
