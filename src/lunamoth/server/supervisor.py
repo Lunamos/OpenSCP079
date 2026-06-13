@@ -756,20 +756,22 @@ class GatewayInfo:
 
 
 class GatewayChild:
+    """Per-chara messaging controller.
+
+    The gateway is NOT a separate process/agent anymore: the messaging adapters
+    run INSIDE the chara's ``serve --stdio`` child and share its one agent (see
+    server/messaging_host.py). This controller just toggles that host on the
+    running child over RPC, so a WeChat message and the desktop app talk to the
+    SAME chara, in the SAME conversation. The host requires the chara child to
+    be running (it hosts the shared agent), so enabling the gateway ensures the
+    child is up; the supervisor's existing child-restart discipline carries the
+    host's resilience (it re-reads messaging.json and re-starts on every boot)."""
+
     def __init__(self, meta: S.SessionMeta, supervisor: "Supervisor") -> None:
         self.meta = meta
         self.name = meta.name
         self.supervisor = supervisor
         self.info = GatewayInfo(platform=self._platform())
-        self.proc: asyncio.subprocess.Process | None = None
-        self._task: asyncio.Task | None = None
-        self._stop_requested = False
-        # Same supervised-restart discipline as CharaChild: a run that stays up
-        # past the health threshold resets the backoff so an isolated crash a
-        # week apart doesn't compound toward the 1800s cap. (No 3-strike
-        # suspension here — a gateway has always restarted unboundedly; the new
-        # `fatal` state covers the non-retryable config-error case instead.)
-        self.backoff = RestartBackoff(floor=60.0, cap=1800.0, health_after=120.0, max_strikes=10**9)
 
     def _config_path(self) -> Path:
         return self.meta.root / "messaging.json"
@@ -790,12 +792,6 @@ class GatewayChild:
     def enabled(self) -> bool:
         return bool(self._config().get("enabled"))
 
-    def status(self) -> dict[str, Any]:
-        self.info.platform = self._platform()
-        if self.proc is not None and self.proc.returncode is None:
-            self.info.pid = int(self.proc.pid)
-        return dataclasses.asdict(self.info)
-
     def set_enabled(self, enabled: bool) -> None:
         path = self._config_path()
         data = self._config()
@@ -805,94 +801,72 @@ class GatewayChild:
         with contextlib.suppress(OSError):
             path.chmod(0o600)
 
+    def _apply_host_status(self, st: Any) -> None:
+        if not isinstance(st, dict):
+            return
+        state = str(st.get("state") or "stopped")
+        self.info.state = "running" if state == "running" else "stopped"
+        detail = str(st.get("detail") or "")
+        self.info.detail = detail
+        self.info.error_message = detail
+        if st.get("platform"):
+            self.info.platform = str(st.get("platform"))
+
+    def _running_child(self) -> "CharaChild | None":
+        child = self.supervisor.charas.get(self.name)
+        if child is not None and child.proc is not None and child.proc.returncode is None:
+            return child
+        return None
+
+    def status(self) -> dict[str, Any]:
+        self.info.platform = self._platform()
+        child = self._running_child()
+        if not self.enabled():
+            self.info.state = "stopped"
+        elif child is None:
+            # Enabled but the chara child isn't up: the host boots with it.
+            if self.info.state not in ("backoff", "fatal"):
+                self.info.state = "stopped"
+        elif self.info.state not in ("backoff", "fatal"):
+            # Enabled + child running: the host starts on boot with the child.
+            self.info.state = "running"
+        self.info.pid = int(child.proc.pid) if child and child.proc else 0
+        return dataclasses.asdict(self.info)
+
     async def start(self, *, persist: bool = False) -> dict[str, Any]:
         if persist:
             self.set_enabled(True)
-        self._stop_requested = False
-        if self.proc is not None and self.proc.returncode is None:
-            self.info.state = "running"
-            self.info.detail = ""
-            self.info.error_message = ""
-            self.info.pid = self.proc.pid
+        self.info.platform = self._platform()
+        if not self.enabled():
+            self.info.state = "stopped"
+            self.info.detail = self.info.error_message = ""
             return self.status()
-        # An explicit start is an operator override: clear a prior fatal/backoff.
-        self.backoff.reset()
-        self._task = asyncio.create_task(self._run_supervised(), name=f"gateway-{self.name}")
-        return self.status()
+        # The host lives in the chara child (it hosts the shared agent), so the
+        # child must be running. Starting the gateway makes the chara resident;
+        # it does NOT change autonomy mode (a chat-mode chara still relays).
+        child = self.supervisor.child(self.name)
+        try:
+            await child.ensure_started(operator=True)
+            st = await child.private_call("messaging.start", {}, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001
+            self.info.state = "backoff"
+            self.info.error_message = str(exc)[:240]
+            self.info.detail = self.info.error_message
+            return dataclasses.asdict(self.info)
+        self._apply_host_status(st)
+        return dataclasses.asdict(self.info)
 
     async def stop(self, *, persist: bool = False) -> dict[str, Any]:
         if persist:
             self.set_enabled(False)
-        self._stop_requested = True
-        proc = self.proc
-        if proc is not None and proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=8.0)
-            except asyncio.TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                await proc.wait()
+        child = self._running_child()
+        if child is not None:
+            with contextlib.suppress(Exception):
+                self._apply_host_status(await child.private_call("messaging.stop", {}, timeout=15.0))
         self.info.state = "stopped"
-        self.info.detail = ""
-        self.info.error_message = ""
+        self.info.detail = self.info.error_message = ""
         self.info.pid = 0
-        return self.status()
-
-    async def _run_supervised(self) -> None:
-        while not self._stop_requested and self.enabled():
-            self.info.platform = self._platform()
-            self.info.state = "starting"
-            self.info.detail = ""
-            self.info.error_message = ""
-            env = {**os.environ, **self.meta.env()}
-            env.setdefault("LUNAMOTH_PY_BACKEND", ISOLATION_TO_BACKEND.get(self.meta.isolation, "sandbox"))
-            log_path = self.meta.root / "gateway.log"
-            log = log_path.open("ab")
-            try:
-                self.proc = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "lunamoth.front.cli",
-                    "gateway",
-                    self.name,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=log,
-                    env=env,
-                    cwd=str(APP_DIR),
-                )
-                self.info.pid = self.proc.pid
-                self.info.state = "running"
-                self.backoff.note_started()
-                code = await self.proc.wait()
-            finally:
-                log.close()
-            self.info.pid = 0
-            if self._stop_requested or not self.enabled() or code == 0:
-                self.info.state = "stopped"
-                self.info.detail = ""
-                self.info.error_message = ""
-                return
-            if code == GATEWAY_FATAL_EXIT:
-                # A configuration error in an adapter: do NOT retry. Stays fatal
-                # until the operator fixes the config and explicitly restarts.
-                self.info.state = "fatal"
-                self.info.error_message = "gateway configuration error; not retrying"
-                self.info.detail = self.info.error_message
-                return
-            # A healthy run resets the ladder (handled inside note_crash too if
-            # the idle poll never ran); an isolated crash restarts at the floor.
-            delay = self.backoff.note_crash()
-            self.info.state = "backoff"
-            self.info.error_message = f"crashed (exit {code}); restart in {int(delay)}s"
-            self.info.detail = self.info.error_message
-            await asyncio.sleep(delay)
-        if not self.enabled():
-            self.info.state = "stopped"
-            self.info.detail = ""
-            self.info.error_message = ""
+        return dataclasses.asdict(self.info)
 
 
 # ---- static HTTP ------------------------------------------------------------

@@ -110,6 +110,11 @@ class JsonRpcDispatcher:
         self._attach_info = None
         self._closed = False
         self.should_close = False
+        self._messaging_host: Any = None
+
+    def set_messaging_host(self, host: Any) -> None:
+        """Bind the in-process messaging host so messaging.* RPCs can drive it."""
+        self._messaging_host = host
 
     # ---- public dispatch -----------------------------------------------------
 
@@ -139,6 +144,8 @@ class JsonRpcDispatcher:
                 result = self._permission_reply(params)
             elif method == "presence.set":
                 result = self._presence_set(params)
+            elif method in ("messaging.start", "messaging.stop", "messaging.status"):
+                result = self._messaging(method)
             elif method == "detach":
                 result = self._detach()
             else:
@@ -290,7 +297,93 @@ class JsonRpcDispatcher:
             self.handle.detach()
         return {"ok": True}
 
+    # ---- messaging host ------------------------------------------------------
+
+    def ensure_attached(self) -> None:
+        """Make sure the shared agent has a session (background presence).
+
+        The messaging host shares this dispatcher's handle; under the
+        supervisor the child is attached in the background, but a host started
+        before any client must still have a session to run a turn on."""
+        with self._lock:
+            if self._attached:
+                return
+        info = self.handle.attach(present=False)
+        with self._lock:
+            self._attached = True
+            self._attach_info = info
+
+    def _messaging(self, method: str) -> dict[str, Any]:
+        host = self._messaging_host
+        if host is None:
+            return {"state": "stopped", "platform": "", "detail": "no messaging host"}
+        if method == "messaging.start":
+            return host.start()
+        if method == "messaging.stop":
+            return host.stop()
+        return host.status()
+
     # ---- streaming -----------------------------------------------------------
+
+    def run_stream_sync(
+        self,
+        kind: str,
+        make_events: Callable[[], Iterator[Any]],
+        on_event: Callable[[Any], None] | None = None,
+    ) -> bool:
+        """Run a turn on the shared handle synchronously, on the CALLING thread.
+
+        Each event is emitted on the transport (so an attached client sees the
+        turn live) AND passed to `on_event` (the messaging host collects the
+        say-channel reply). Supersedes an in-flight idle turn like a human send
+        does; raises -32011 if a human/messaging turn is already active. Returns
+        False if the turn was interrupted. This is the seam that lets a WeChat
+        message and the desktop app share ONE agent and ONE conversation."""
+        superseding: threading.Thread | None = None
+        with self._lock:
+            if self._closed:
+                raise RpcError(-32002, "session is closing")
+            if self._is_streaming_locked():
+                if self._stream_kind == "idle":
+                    self._stream_interrupt.set()
+                    superseding = self._stream_thread
+                else:
+                    raise RpcError(-32011, "a stream is already in flight")
+        if superseding is not None and superseding is not threading.current_thread():
+            superseding.join(timeout=10.0)
+        with self._lock:
+            self._stream_interrupt.clear()
+            self._stream_thread = threading.current_thread()
+            self._stream_kind = kind
+        interrupted = False
+        events: Iterator[Any] | None = None
+        try:
+            events = make_events()
+            for ev in events:
+                if self._stream_interrupt.is_set():
+                    interrupted = True
+                    break
+                if not self._emit("event", to_dict(ev)):
+                    interrupted = True
+                    self._stream_interrupt.set()
+                    break
+                if on_event is not None:
+                    try:
+                        on_event(ev)
+                    except Exception:
+                        _log.exception("messaging on_event failed")
+            if interrupted and hasattr(events, "close"):
+                try:
+                    events.close()
+                except Exception:
+                    _log.exception("closing interrupted %s stream failed", kind)
+        finally:
+            with self._lock:
+                if threading.current_thread() is self._stream_thread:
+                    self._stream_thread = None
+                    self._stream_kind = ""
+                self._stream_interrupt.clear()
+        return not interrupted
 
     def _start_stream(
         self,

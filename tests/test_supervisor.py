@@ -4,7 +4,6 @@ import asyncio
 import json
 
 from lunamoth.server.supervisor import (
-    GATEWAY_FATAL_EXIT,
     DriverSlot,
     FrameRing,
     GatewayChild,
@@ -354,7 +353,7 @@ def test_gateway_info_shape_has_state_enum_and_error_message():
 
 
 class _FakeMeta:
-    """A SessionMeta stand-in whose root is a real tmp dir (gateway.log lands there)."""
+    """A SessionMeta stand-in whose root is a real tmp dir (messaging.json lands there)."""
 
     def __init__(self, root):
         self.name = "t"
@@ -365,76 +364,103 @@ class _FakeMeta:
         return {}
 
 
-def _make_gateway(monotonic, root):
+class _FakeProc:
+    def __init__(self):
+        self.returncode = None
+        self.pid = 4242
+
+
+class _FakeCharaChild:
+    """Stand-in for a running serve child that hosts the shared agent."""
+
+    def __init__(self, host_status=None):
+        self.proc = _FakeProc()
+        self.ensure_started_calls = 0
+        self.calls: list[str] = []
+        self.host_status = host_status or {"state": "running", "platform": "weixin", "detail": ""}
+
+    async def ensure_started(self, *, operator=False):
+        self.ensure_started_calls += 1
+
+    async def private_call(self, method, params=None, timeout=60.0):
+        self.calls.append(method)
+        if method == "messaging.start":
+            return self.host_status
+        if method == "messaging.stop":
+            return {"state": "stopped", "platform": "weixin", "detail": ""}
+        return {"state": "stopped", "platform": "", "detail": ""}
+
+
+class _FakeSupervisor:
+    def __init__(self, child):
+        self._child = child
+        self.charas = {"t": child} if child is not None else {}
+
+    def child(self, name):
+        return self._child
+
+
+def _make_gateway(root, supervisor):
     gw = GatewayChild.__new__(GatewayChild)
     gw.meta = _FakeMeta(root)
     gw.name = "t"
-    gw.supervisor = None
+    gw.supervisor = supervisor
     gw.info = GatewayInfo()
-    gw.proc = None
-    gw._task = None
-    gw._stop_requested = False
-    gw.backoff = RestartBackoff(floor=60.0, cap=1800.0, health_after=120.0, max_strikes=10**9, monotonic=monotonic)
     return gw
 
 
-def test_gateway_state_mapping_transient_crash_goes_backoff(monkeypatch, tmp_path):
-    mono = {"t": 0.0}
-    gw = _make_gateway(lambda: mono["t"], tmp_path)
-    monkeypatch.setattr(gw, "enabled", lambda: True)
-    monkeypatch.setattr(gw, "_platform", lambda: "qq")
-
-    spawn_calls = {"n": 0}
-
-    async def fake_spawn():
-        spawn_calls["n"] += 1
-        gw.proc = _fake_proc(1)  # transient crash exit
-        return gw.proc
-
-    # Drive a single loop iteration: spawn → crash(1) → backoff, then stop.
-    states = []
-
-    async def fake_sleep(d):
-        states.append(("backoff", gw.info.state, gw.info.error_message, d))
-        gw._stop_requested = True  # break the loop after one backoff
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: fake_spawn())
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-
-    async def run():
-        await gw._run_supervised()
-
-    asyncio.run(run())
-    assert states and states[0][1] == "backoff"
-    assert states[0][3] == 60.0  # floor delay
-    assert "crashed (exit 1)" in states[0][2]
+def _write_messaging(root, enabled):
+    cfg = {"enabled": bool(enabled), "adapters": {"weixin": {}}}
+    (root / "messaging.json").write_text(json.dumps(cfg), encoding="utf-8")
 
 
-def test_gateway_fatal_exit_does_not_retry(monkeypatch, tmp_path):
-    mono = {"t": 0.0}
-    gw = _make_gateway(lambda: mono["t"], tmp_path)
-    monkeypatch.setattr(gw, "enabled", lambda: True)
-    monkeypatch.setattr(gw, "_platform", lambda: "qq")
+def test_gateway_start_drives_shared_agent_child(tmp_path):
+    # The gateway no longer spawns its own process: it ensures the chara child
+    # (the shared agent) is up and turns the in-child messaging host on.
+    child = _FakeCharaChild()
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+    _write_messaging(tmp_path, enabled=True)
 
-    async def fake_spawn():
-        gw.proc = _fake_proc(GATEWAY_FATAL_EXIT)
-        return gw.proc
+    asyncio.run(gw.start(persist=False))
+    assert child.ensure_started_calls == 1
+    assert "messaging.start" in child.calls
+    assert gw.info.state == "running" and gw.info.platform == "weixin"
 
-    slept = []
 
-    async def fake_sleep(d):
-        slept.append(d)
+def test_gateway_start_noop_when_disabled(tmp_path):
+    child = _FakeCharaChild()
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+    _write_messaging(tmp_path, enabled=False)
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: fake_spawn())
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    asyncio.run(gw.start(persist=False))
+    assert child.calls == []  # never touched the chara child
+    assert gw.info.state == "stopped"
 
-    async def run():
-        await gw._run_supervised()
 
-    asyncio.run(run())
-    assert gw.info.state == "fatal"
-    assert gw.info.error_message and "configuration" in gw.info.error_message
-    assert slept == []  # never retried
+def test_gateway_stop_tells_running_child(tmp_path):
+    child = _FakeCharaChild()
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+
+    asyncio.run(gw.stop(persist=False))
+    assert "messaging.stop" in child.calls
+    assert gw.info.state == "stopped" and gw.info.error_message == ""
+
+
+def test_gateway_status_running_when_enabled_and_child_up(tmp_path):
+    child = _FakeCharaChild()
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+    _write_messaging(tmp_path, enabled=True)
+
+    st = gw.status()
+    assert st["state"] == "running" and st["platform"] == "weixin"
+
+
+def test_gateway_status_stopped_when_child_down(tmp_path):
+    gw = _make_gateway(tmp_path, _FakeSupervisor(None))
+    _write_messaging(tmp_path, enabled=True)
+
+    st = gw.status()
+    assert st["state"] == "stopped"  # host boots with the chara child
 
 
 def test_gateway_backoff_resets_after_healthy_run():
@@ -459,23 +485,22 @@ def test_gateway_backoff_resets_after_healthy_run():
     assert b.note_crash() == 60.0
 
 
-def test_gateway_clean_exit_zero_stops(monkeypatch, tmp_path):
-    mono = {"t": 0.0}
-    gw = _make_gateway(lambda: mono["t"], tmp_path)
-    monkeypatch.setattr(gw, "enabled", lambda: True)
-    monkeypatch.setattr(gw, "_platform", lambda: "qq")
+def test_gateway_start_surfaces_host_error_as_backoff(tmp_path):
+    # A bad adapter config makes messaging.start raise; the controller reflects
+    # it as a visible backoff (never a silent success).
+    child = _FakeCharaChild()
 
-    async def fake_spawn():
-        gw.proc = _fake_proc(0)
-        return gw.proc
+    async def boom(method, params=None, timeout=60.0):
+        child.calls.append(method)
+        raise RuntimeError("unknown messaging adapter 'nope'")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: fake_spawn())
+    child.private_call = boom
+    gw = _make_gateway(tmp_path, _FakeSupervisor(child))
+    _write_messaging(tmp_path, enabled=True)
 
-    async def run():
-        await gw._run_supervised()
-
-    asyncio.run(run())
-    assert gw.info.state == "stopped" and gw.info.error_message == ""
+    asyncio.run(gw.start(persist=False))
+    assert gw.info.state == "backoff"
+    assert "nope" in gw.info.error_message
 
 
 def test_autonomy_is_the_persisted_mode(tmp_path):

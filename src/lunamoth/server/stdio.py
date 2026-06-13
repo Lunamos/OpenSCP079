@@ -34,6 +34,20 @@ def serve() -> int:
     sys.stdout = sys.stderr
     out = _StdoutFrames(protocol_stdout)
     dispatch = JsonRpcDispatcher(out.write)
+    # The messaging host shares this dispatcher's ONE agent: an inbound WeChat
+    # message runs a turn on the same handle the desktop app drives, so the
+    # exchange streams into the chat window AND the reply goes back to WeChat.
+    # Toggling is runtime via the messaging.start/stop RPCs (no child restart).
+    try:
+        from .messaging_host import MessagingHost
+        from ..messaging.gateway import config_path as _messaging_config_path
+
+        host = MessagingHost(dispatch, _messaging_config_path())
+        dispatch.set_messaging_host(host)
+        host.start()  # no-op unless messaging.json has enabled: true
+    except Exception:
+        import logging
+        logging.getLogger("lunamoth.server.stdio").exception("messaging host init failed")
     if not out.write(hello_frame()):
         dispatch.close()
         return 0
