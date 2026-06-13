@@ -945,6 +945,11 @@ details.cv-raw pre{
 .flow-steps .done{color:var(--accent-deep)}
 .flow-steps i{width:14px; height:1px; background:var(--hairline); display:block}
 .flow-inner{width:620px; max-width:100%}
+.tell-guide{
+  font-size:12.5px; line-height:1.75; color:var(--text-2);
+  background:var(--panel); border:1px solid var(--hairline-2);
+  border-radius:11px; padding:13px 15px; margin-bottom:13px;
+}
 .tell-box{
   width:100%; min-height:280px; background:var(--panel); border-radius:13px; padding:18px;
   box-shadow:0 0 0 1px var(--hairline-2); border:none; outline:none; font:inherit; font-size:14px;

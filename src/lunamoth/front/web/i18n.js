@@ -279,7 +279,8 @@ const I18N = {
   // create flow
   "flow-tell": ["讲述", "Tell"],
   "flow-shape": ["成形", "Shape"],
-  "tell-ph": ["用你自己的话介绍 TA——是谁、什么样的性子、住在怎样的世界、和你是什么关系。想到什么写什么；已有的设定直接粘进来也行。", "Introduce them in your own words — who they are, their temperament, the world they live in, what you are to each other. Write freely; paste existing lore if you have it."],
+  "tell-ph": ["用你自己的话介绍 TA——是谁、什么样的性子、住在怎样的世界、TA 想要什么（目标与动机），以及在这个世界里「你」是谁、和 TA 是什么关系。想到什么写什么；已有的设定直接粘进来也行。", "Introduce them in your own words — who they are, their temperament, the world they live in, what they want (goals & motivations), and who you are in that world and what you are to each other. Write freely; paste existing lore if you have it."],
+  "tell-guide": ["描述你想象中的世界观、你想与之相处的角色，以及「你」在这个世界里的设定和你们的关系——AI 会用当前默认模型把它生成成一张角色卡。建议默认模型至少用 DeepSeek V4 Flash 或更强（角色卡创建对模型要求较高）。从 SillyTavern / 酒馆 迁移？直接把角色卡 JSON 粘进来，生成管线会自动识别处理。", "Describe the world you imagine, the character you want to live alongside, and who YOU are in that world and what you are to each other — the AI turns it into a character card using your default model. Use at least DeepSeek V4 Flash or stronger as the default (card creation is demanding). Migrating from SillyTavern? Paste the card JSON straight in — the pipeline detects and handles it."],
   "tell-go-bg": ["生成（放进卡册）✦", "Generate (into the deck) ✦"],
   "tell-go-edit": ["在此编辑后保存", "Edit here, then save"],
   "gen-with": ["生成模型：{model}", "Generating with {model}"],
@@ -322,7 +323,9 @@ const I18N = {
   "later-deck": ["先放进卡册", "Keep in the deck for now"],
   // first run / setup
   "tagline": ["和你的原创角色一起生活<br>Agentic 角色扮演叙事生成器", "The characters that live with you<br>An agentic character tavern"],
-  "btn-try": ["尝试默认角色", "Try the default character"],
+  "fr-create-title": ["创建你的角色", "Create your character"],
+  "fr-create-sub": ["描述你想象的世界与角色，AI 自动生成角色卡", "Describe your world & character — AI writes the card"],
+  "btn-try": ["或者试试我们的默认角色", "Or try our default character"],
   "btn-try-sub": ["", ""],
   "btn-create": ["创建我自己的角色", "Create my own character"],
   "btn-import": ["导入角色卡（SillyTavern PNG / JSON）", "Import a card (SillyTavern PNG / JSON)"],

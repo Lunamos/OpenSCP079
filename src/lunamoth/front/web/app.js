@@ -1916,9 +1916,10 @@ async function injectPendingAvatar(path, flow) {
 function renderTellStep(root, flow) {
   root.innerHTML = "";
   root.appendChild(flowSteps(0));
+  const guide = el("div", { class: "tell-guide" }, t("tell-guide"));
   const box = el("textarea", { class: "tell-box", placeholder: t("tell-ph") });
   box.value = flow.origin;
-  const inner = el("div", { class: "flow-inner" }, box);
+  const inner = el("div", { class: "flow-inner" }, guide, box);
 
   // which model will do the generation (= aux 'draft' override or main model)
   const model = effectiveDraftModel();
