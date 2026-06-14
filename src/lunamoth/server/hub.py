@@ -118,40 +118,10 @@ def save_defaults(updates: dict[str, str]) -> dict[str, str]:
     return {k: raw[k] for k in _DEFAULT_FIELDS if isinstance(raw.get(k), str)}
 
 
-# ---- per-task auxiliary models (webui-needs #14) ----------------------------------
-
-_AUX_TASKS = ("draft", "transcribe", "avatar", "compact")
-
-
-def aux_models() -> dict[str, str]:
-    raw = _read_desktop_raw().get("aux_models")
-    if not isinstance(raw, dict):
-        return {}
-    return {k: str(v) for k, v in raw.items() if k in _AUX_TASKS and isinstance(v, str) and v}
-
-
-def _aux_model(task: str) -> str:
-    """The persisted helper-model for a task; '' = use the main model."""
-    return aux_models().get(task, "")
-
-
-def save_aux_models(updates: Any) -> dict[str, str]:
-    if not isinstance(updates, dict):
-        raise RpcError(-32602, "aux_models must be an object of task -> model id")
-    unknown = sorted(set(updates) - set(_AUX_TASKS))
-    if unknown:
-        raise RpcError(-32602, f"unknown aux task(s): {', '.join(unknown)} — expected {'/'.join(_AUX_TASKS)}")
-    raw = _read_desktop_raw()
-    cur = raw.get("aux_models") if isinstance(raw.get("aux_models"), dict) else {}
-    merged = dict(cur)
-    for k, v in updates.items():
-        if v is None or v == "":
-            merged.pop(k, None)  # back to "use the main model"
-        else:
-            merged[k] = str(v)
-    raw["aux_models"] = merged
-    _write_desktop_raw(raw)
-    return aux_models()
+# Per-task auxiliary models were removed: card draft, avatar generation and
+# field rewrites all use the system default model + reasoning effort. The model
+# override surfaces only where the chara itself is configured (wake / chara
+# right-side settings), never for these generation helpers.
 
 
 # ---- named key store (webui-needs #10) -------------------------------------------
@@ -235,7 +205,6 @@ def _public_defaults(data: dict[str, str]) -> dict[str, Any]:
     """Defaults with the key reduced to its presence (never echo secrets)."""
     out: dict[str, Any] = {k: v for k, v in data.items() if k != "api_key"}
     out["has_key"] = bool(data.get("api_key"))
-    out["aux_models"] = aux_models()  # per-task helper models ('' absent = main model)
     return out
 
 
@@ -494,24 +463,24 @@ Reply with STRICT JSON ONLY: one object, no markdown, no comments, no trailing p
 The object must have exactly these keys:
 {
   "name": string,
+  "user_name": string,
   "description": string,
   "first_mes": string,
   "world_entries": [{"keys": [string, ...], "content": string, "constant": boolean}],
   "seed_goals": [string],
   "tagline": string,
-  "theme_color": string,
-  "avatar_svg": string
+  "theme_color": string
 }
 
 Requirements:
-- description: the character persona, 150-400 words when the language uses spaces; for CJK, a similarly rich 2-5 paragraphs.
+- user_name: who "you" — the human who will talk to this character — ARE inside this world: a short name or role and your relationship to the character. Use whatever the inspiration says about the reader / "you". If the inspiration does NOT say who you are, do NOT invent a second protagonist: assign a neutral, moderate role that simply fits the world — name it neutrally (e.g. "friend" / "朋友") and make "you" an ordinary person of this world. Never leave it empty.
+- description: the character persona, 150-400 words when the language uses spaces; for CJK, a similarly rich 2-5 paragraphs. Convey the character's goals and motivations, not just appearance.
 - first_mes: an opening message in character.
 - world_entries: 2-4 lorebook entries. keys are short trigger words/names. At most one entry may be constant=true.
 - seed_goals: 1-3 short ongoing pursuits.
 - tagline: one line.
 - theme_color: a hex color like "#5B9FD4".
-- avatar_svg: a SMALL decorative SVG, viewBox "0 0 64 64", <=1500 chars, flat geometric shapes, no text elements,
-  no scripts, no event attributes, no external references, and using the theme color."""
+The avatar is NOT generated here — the human uploads one or generates it on demand later."""
 
 _THEME_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _SVG_MAX_CHARS = 1500
@@ -632,6 +601,18 @@ def _validate_seed_goals(value: Any) -> list[str]:
     return goals[:3]
 
 
+# Who "you" are in the world, when the model leaves it blank: a neutral, moderate
+# ordinary-person role in the card's language (never empty — the operator name is
+# fixed at wake and must always resolve to something).
+_DEFAULT_USER_BY_LANG = {"zh": "朋友", "en": "friend"}
+
+
+def _validate_user_name(value: Any, lang: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return _DEFAULT_USER_BY_LANG.get(lang, "friend")
+
+
 def _parse_card_draft(raw: str) -> dict[str, Any]:
     try:
         obj = json.loads(raw.strip())
@@ -643,8 +624,8 @@ def _parse_card_draft(raw: str) -> dict[str, Any]:
         ) from exc
     if not isinstance(obj, dict):
         raise _invalid_draft("top-level JSON must be an object")
-    expected = {"name", "description", "first_mes", "world_entries", "seed_goals",
-                "tagline", "theme_color", "avatar_svg"}
+    expected = {"name", "user_name", "description", "first_mes", "world_entries", "seed_goals",
+                "tagline", "theme_color"}
     got = set(obj)
     if got != expected:
         missing = ", ".join(sorted(expected - got))
@@ -655,9 +636,14 @@ def _parse_card_draft(raw: str) -> dict[str, Any]:
         if extra:
             parts.append(f"unexpected: {extra}")
         raise _invalid_draft("draft keys must match the requested schema (" + "; ".join(parts) + ")")
+    name = _string_field(obj, "name")
+    description = _string_field(obj, "description")
+    # The card's language drives the neutral user_name fallback (朋友 / friend).
+    lang = detect_language(text=f"{description} {name}")
     draft = {
-        "name": _string_field(obj, "name"),
-        "description": _string_field(obj, "description"),
+        "name": name,
+        "user_name": _validate_user_name(obj.get("user_name"), lang),
+        "description": description,
         "first_mes": _string_field(obj, "first_mes"),
         "world_entries": _validate_world_entries(obj.get("world_entries")),
         "seed_goals": _validate_seed_goals(obj.get("seed_goals")),
@@ -665,11 +651,7 @@ def _parse_card_draft(raw: str) -> dict[str, Any]:
         "theme_color": _theme_color(obj.get("theme_color")),
         "embodiment": "literal",
     }
-    svg, note = _sanitize_avatar_svg(obj.get("avatar_svg"))
-    if svg:
-        draft["avatar_svg"] = svg
-    if note:
-        draft["notes"] = [note]
+    # No avatar is drafted — it's a manual upload/generate step (stored as a sidecar).
     return draft
 
 
@@ -689,6 +671,69 @@ def draft_card_from_inspiration(defaults: dict[str, str], inspiration: str, mode
     if not raw.strip():
         raise HubRpcError(-32050, "the model returned an empty draft", {"kind": "draft_json", "detail": "empty response"})
     return _parse_card_draft(raw)
+
+
+# ---- per-field AI edit (natural-language rewrite of ONE card field) -------------
+
+_FIELD_REWRITE_SYSTEM = (
+    "You are editing ONE field of a SillyTavern/LunaMoth character card. Rewrite just "
+    "that field. Keep the SAME language as the current text. Preserve the character's "
+    "established name, voice, world and facts unless the instruction says otherwise. "
+    "Return ONLY the new field text — no quotes, no markdown, no labels, no commentary."
+)
+
+# Human-readable shape hint per field, so the model returns the right kind of text.
+_FIELD_REWRITE_LABEL = {
+    "name": "the character's name (a short name)",
+    "description": "the character persona/description (rich prose)",
+    "personality": "the character's personality (concise traits)",
+    "scenario": "the scene/setting the character is in",
+    "first_mes": "the character's opening message, in their own voice",
+    "tagline": "a one-line tagline",
+    "user_name": "who YOU (the human) are in this world — a short name or role",
+    "user_persona": "a short description of who YOU (the human) are to the character",
+    "on_attach": "the neutral one-line fact shown when you enter the conversation",
+    "on_detach": "the neutral one-line fact shown when you leave the conversation",
+    "goals": "the character's seed goals, one short goal per line",
+    "world_entries": "world-book lorebook entries, one per line as 'key1, key2 — content'",
+}
+
+
+def rewrite_card_field(defaults: dict[str, str], field: str, value: str = "",
+                       instruction: str = "", context: str = "", model: str = "") -> dict[str, Any]:
+    """Rewrite ONE card field with the LLM. Empty instruction = free rephrase of the
+    current value; a non-empty instruction steers the change. Returns {field, text}.
+    No fallback: a failed/empty model call surfaces as a visible error."""
+    field = (field or "").strip()
+    if not field:
+        raise RpcError(-32602, "card.rewrite_field needs a field")
+    value = value if isinstance(value, str) else ""
+    label = _FIELD_REWRITE_LABEL.get(field, f"the '{field}' field")
+    directive = (instruction or "").strip() or (
+        "Rephrase it freely — keep the meaning and language, but improve the wording and flavor."
+    )
+    parts = [f"Field: {label}"]
+    if (context or "").strip():
+        parts.append(f"\nCharacter context (do not rewrite this, just for consistency):\n{context.strip()}")
+    parts.append(f"\nCurrent text:\n{value.strip() or '(empty)'}")
+    parts.append(f"\nInstruction: {directive}")
+    raw = _complete(defaults, _FIELD_REWRITE_SYSTEM, "\n".join(parts),
+                    model=model, max_tokens=2048, temperature=0.9)
+    text = _strip_text_fence(raw).strip()
+    if not text:
+        raise HubRpcError(-32050, "the model returned an empty rewrite",
+                          {"kind": "rewrite", "detail": "empty response"})
+    return {"field": field, "text": text}
+
+
+def _strip_text_fence(raw: str) -> str:
+    """Drop a ```...``` fence the model may wrap text in, despite instructions."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    return s.strip()
 
 
 # ---- cards ---------------------------------------------------------------------
@@ -925,6 +970,8 @@ def _card_entry(path: Path, builtin: bool, refs: dict[str, list[str]]) -> dict[s
         "draft": bool(isinstance(ext, dict) and ext.get("draft")),
         "frozen": bool(used_by),
         "used_by": used_by,
+        "locked": False,   # a deck template — editable/wakeable (overridden for chara cards)
+        "owner": "",       # the chara that owns this card, for locked session cards
         "creator_notes": (card.creator_notes or "")[:300],
         "tagline": tagline[:160],
         "theme_color": theme_color,
@@ -963,7 +1010,30 @@ def list_cards() -> list[dict[str, Any]]:
             if not builtin:
                 user_by_key.setdefault(key, entry)
             out.append(entry)
+    # Each living chara owns its own frozen card — a LOCKED deck entry (browse /
+    # copy / wake only), so every card in the system is browsable in the deck.
+    for meta in S.list_sessions():
+        entry = _session_card_entry(meta)
+        if entry is not None:
+            out.append(entry)
     return out
+
+
+def _session_card_entry(meta: S.SessionMeta) -> dict[str, Any] | None:
+    """A chara's frozen card as a LOCKED deck entry (owned by the chara)."""
+    frozen = meta.root / "card.json"
+    if not frozen.exists():
+        frozen = meta.root / "card.png"
+    if not frozen.exists():
+        return None
+    entry = _card_entry(frozen, False, {})
+    if entry is None:
+        return None
+    entry["locked"] = True
+    entry["owner"] = meta.name
+    entry["frozen"] = True
+    entry["used_by"] = [meta.name]
+    return entry
 
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -1590,7 +1660,7 @@ def session_entry(meta: S.SessionMeta, supervisor: Any | None = None) -> dict[st
 
 def wake(card_path: str, name: str = "", isolation: str = "sandbox",
          model: str = "", toolpack: str = "", embodiment: str = "",
-         key: str = "") -> dict[str, Any]:
+         key: str = "", card_data: "dict[str, Any] | None" = None) -> dict[str, Any]:
     """Instantiate a card: create the session, freeze a card copy, write config.
 
     The card describes WHO the chara is; this call decides where it lives
@@ -1622,7 +1692,17 @@ def wake(card_path: str, name: str = "", isolation: str = "sandbox",
 
     frozen = meta.root / "card.json"
     src = Path(card_path)
-    if src.suffix.lower() == ".png":
+    if card_data is not None:
+        # Wake-time edits: freeze the EDITED card as this chara's own card; the
+        # source template is never mutated (it stays unlocked and re-wakeable).
+        if not isinstance(card_data, dict) or not isinstance(card_data.get("data"), dict):
+            raise RpcError(-32602, "card_data must be a {data:{...}} card object")
+        edited = dict(card_data)
+        edited.setdefault("spec", "chara_card_v3")
+        edited.setdefault("spec_version", "3.0")
+        _sanitize_card_extensions(edited)
+        frozen.write_text(json.dumps(edited, ensure_ascii=False, indent=2), encoding="utf-8")
+    elif src.suffix.lower() == ".png":
         # PNG cards keep their embedded payload; copy byte-for-byte.
         frozen = meta.root / "card.png"
         shutil.copyfile(src, frozen)
@@ -2043,12 +2123,15 @@ def draft_to_card(draft: dict[str, Any], origin_text: str = "", as_draft: bool =
         ext["toolpack"] = str(draft["toolpack_hint"])
     if draft.get("tagline"):
         ext["tagline"] = str(draft["tagline"]).strip()
+    # Who "you" are in this world (the SillyTavern persona convention) rides the card.
+    if str(draft.get("user_name") or "").strip():
+        ext["user_name"] = str(draft["user_name"]).strip()
+    if str(draft.get("user_persona") or "").strip():
+        ext["user_persona"] = str(draft["user_persona"]).strip()
     theme = _clean_theme(draft.get("theme"), draft.get("theme_color"))
     if theme:
         ext["theme"] = theme
-    svg, _note = _sanitize_avatar_svg(draft.get("avatar_svg"))
-    if svg:
-        ext["avatar_svg"] = svg
+    # No avatar from the draft — it's a manual upload/generate step (sidecar).
     embodiment = str(draft.get("embodiment") or "literal")
     ext["embodiment"] = embodiment if embodiment in ("literal", "actor") else "literal"
 
@@ -2193,6 +2276,7 @@ class HubDispatcher:
         if method == "session.export":
             return export_session(self._meta(p))
         if method == "session.wake":
+            cd = p.get("card_data")
             return wake(
                 card_path=str(p.get("card") or ""),
                 name=str(p.get("name") or ""),
@@ -2201,6 +2285,7 @@ class HubDispatcher:
                 toolpack=str(p.get("toolpack") or ""),
                 embodiment=str(p.get("embodiment") or ""),
                 key=str(p.get("key") or ""),
+                card_data=cd if isinstance(cd, dict) else None,
             )
         if method == "toolpacks.list":
             return list_toolpacks()
@@ -2267,14 +2352,20 @@ class HubDispatcher:
             return delete_card(str(p.get("path") or ""))
         if method == "card.duplicate":
             return duplicate_card(str(p.get("path") or ""))
+        if method == "card.rewrite_field":
+            return rewrite_card_field(load_defaults(), field=str(p.get("field") or ""),
+                                      value=str(p.get("value") or ""),
+                                      instruction=str(p.get("instruction") or ""),
+                                      context=str(p.get("context") or ""),
+                                      model=str(p.get("model") or ""))
         if method == "card.merge_world":
             return merge_world(str(p.get("card_path") or p.get("path") or ""), p.get("world"))
         if method == "cards.draft":
             inspiration = str(p.get("inspiration") or "").strip()
             if not inspiration:
                 raise RpcError(-32602, "cards.draft needs inspiration")
-            return draft_card_from_inspiration(load_defaults(), inspiration,
-                                               model=str(p.get("model") or "") or _aux_model("draft"))
+            # Card drafting always uses the system default model (no per-task override).
+            return draft_card_from_inspiration(load_defaults(), inspiration)
         if method == "card.from_draft":
             draft = p.get("draft")
             if not isinstance(draft, dict):
@@ -2286,8 +2377,6 @@ class HubDispatcher:
         if method == "defaults.get":
             return _public_defaults(load_defaults())
         if method == "defaults.set":
-            if "aux_models" in p:
-                save_aux_models(p.get("aux_models"))
             updates = {k: v for k, v in p.items() if k in _DEFAULT_FIELDS and isinstance(v, str)}
             before = load_defaults()
             defaults = save_defaults(updates)
@@ -2335,7 +2424,7 @@ class HubDispatcher:
             text = str(p.get("text") or "").strip()
             if not text:
                 raise RpcError(-32602, "transcribe.card needs text")
-            return transcribe_card(load_defaults(), text, model=str(p.get("model") or "") or _aux_model("transcribe"))
+            return transcribe_card(load_defaults(), text)
         if method == "open.path":
             return open_path(str(p.get("path") or ""), reveal=bool(p.get("reveal")))
         raise RpcError(-32601, f"unknown method: {method}")

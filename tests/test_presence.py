@@ -1,5 +1,6 @@
-"""Presence awareness: card-driven attach/detach prompts, the cross-process
-handoff file, and the presence-gated request_permission tool."""
+"""Presence awareness: the neutral enter/leave conversation markers (card-
+overridable wording), the cross-process handoff file, and the presence-gated
+request_permission tool."""
 import pytest
 
 from lunamoth.session.settings import Settings
@@ -19,19 +20,26 @@ def agent(tmp_path, monkeypatch):
     return make
 
 
-def test_default_card_declares_presence_prompts(agent):
+def test_default_card_overrides_the_presence_markers(agent):
+    """The bundled default card declares on_attach/on_detach, so its enter/leave
+    markers use that card wording (macros applied) instead of the neutral default."""
+    from lunamoth import presence
+
     a = agent()
-    assert a.settings.user_name in a.attach_event_text()
-    assert a.detach_event_text().strip()  # the card declares one; wording is its own
+    entered = presence.marker_text(a.character, "entered", a.char_name(), a.settings.user_name, a.lang == "zh")
+    left = presence.marker_text(a.character, "left", a.char_name(), a.settings.user_name, a.lang == "zh")
+    assert a.settings.user_name in entered  # the card's on_attach names {{user}}
+    assert left.strip()
 
 
-def test_card_without_prompts_means_no_events():
+def test_card_without_overrides_uses_the_neutral_default():
     from lunamoth.content.cards import CharacterCard
     from lunamoth import presence
 
     bare = CharacterCard(name="Visitor")
-    assert presence.attach_text(bare, "Visitor", "op") == ""
-    assert presence.detach_text(bare, "Visitor", "op") == ""
+    assert presence.marker_text(bare, "entered", "Visitor", "op", False) == "[op joined the conversation.]"
+    assert presence.marker_text(bare, "left", "Visitor", "op", False) == "[op left the conversation.]"
+    assert presence.marker_text(bare, "entered", "Visitor", "op", True) == "［op进入了对话。］"
 
 
 def test_presence_state_roundtrip(tmp_path):
@@ -45,14 +53,6 @@ def test_presence_state_roundtrip(tmp_path):
     p.queue_event("the operator left")
     assert p.pop_event() == "the operator left"
     assert p.pop_event() == ""  # consumed
-
-
-def test_detach_queues_handoff_and_logs(agent):
-    a = agent(toolpack="sandbox")
-    session = a.make_session()
-    a.note_detach(session)
-    assert any(role == "system" for role, _ in session.context.pairs())
-    assert a.presence.pop_event() != ""
 
 
 def test_request_denied_when_operator_away(agent):
@@ -183,18 +183,18 @@ def test_speaking_inserts_an_entered_marker_once_then_leaving_marks_departure(ag
     a.presence.mark_met()
     handle = CharaHandle(agent=a)
     handle.attach(present=True)
+    # Count system lines (the markers) rather than match text — the marker wording
+    # is card-overridable (the default card supplies its own on_attach/on_detach).
+    def n_sys():
+        return sum(1 for m in handle._session.context.messages if m.get("role") == "system")
+
+    base = n_sys()
     list(handle.stream_user("在吗？"))
-    systems = [m["content"] for m in handle._session.context.messages if m.get("role") == "system"]
-    entered = [s for s in systems if "进入" in s or "joined" in s]
-    assert len(entered) == 1  # the entered marker, exactly once
-    # a second message does NOT add another entered marker
+    assert n_sys() == base + 1  # the entered marker, exactly once on first speech
     list(handle.stream_user("还在吗"))
-    systems = [m["content"] for m in handle._session.context.messages if m.get("role") == "system"]
-    assert len([s for s in systems if "进入" in s or "joined" in s]) == 1
-    # leaving after speaking writes one departure marker
+    assert n_sys() == base + 1  # a second message does NOT add another entered marker
     handle.detach()
-    systems = [m["content"] for m in handle._session.context.messages if m.get("role") == "system"]
-    assert len([s for s in systems if "离开" in s or "left" in s]) == 1
+    assert n_sys() == base + 2  # leaving after speaking writes one departure marker
     assert a.presence.pop_event() != ""
 
 

@@ -46,9 +46,10 @@ def set_defaults():
                      "api_key": "sk-test", "model": "test/model"})
 
 
-def draft_payload(svg="<svg viewBox=\"0 0 64 64\"><circle cx=\"32\" cy=\"32\" r=\"20\" fill=\"#7C5CFF\"/></svg>"):
+def draft_payload():
     return {
         "name": "Aster",
+        "user_name": "visitor",
         "description": "Aster is a lantern keeper from a quiet orbital garden. "
         "They speak gently, collect small impossible weather signs, and keep careful notes for visitors.",
         "first_mes": "The lanterns are awake. Did you bring a question for the dark?",
@@ -59,7 +60,6 @@ def draft_payload(svg="<svg viewBox=\"0 0 64 64\"><circle cx=\"32\" cy=\"32\" r=
         "seed_goals": ["Map the mirror-season drift", "Welcome careful visitors"],
         "tagline": "A gentle keeper of orbital lanterns",
         "theme_color": "#7c5cff",
-        "avatar_svg": svg,
     }
 
 
@@ -156,6 +156,31 @@ def test_wake_freezes_card_and_writes_config():
     assert cfg["api_key"] == "sk-test"
     assert cfg["toolpack"] == "sandbox"  # from the card's extensions.lunamoth
     assert cfg["py_backend"] == "sandbox"
+
+
+def test_wake_with_card_data_freezes_the_edited_card_not_the_source():
+    set_defaults()
+    edited = {"data": {"name": "月蛾", "description": "EDITED AT WAKE",
+                       "extensions": {"lunamoth": {"toolpack": "sandbox"}}}}
+    entry = result("session.wake", {"card": luna_card_path(), "card_data": edited})
+    meta = S.load_session(entry["name"])
+    frozen = json.loads((meta.root / "card.json").read_text(encoding="utf-8"))
+    assert frozen["data"]["description"] == "EDITED AT WAKE"   # the edit was frozen
+    # the source template on disk is untouched
+    source = json.loads(Path(luna_card_path()).read_text(encoding="utf-8"))
+    assert source["data"]["description"] != "EDITED AT WAKE"
+
+
+def test_list_cards_includes_living_chara_cards_as_locked():
+    set_defaults()
+    entry = result("session.wake", {"card": luna_card_path(), "name": "lockcheck"})
+    cards = result("cards.list")
+    owned = [c for c in cards if c.get("owner") == entry["name"]]
+    assert len(owned) == 1
+    assert owned[0]["locked"] is True
+    # the bundled template is still present and NOT locked (re-wakeable)
+    template = next(c for c in cards if c["builtin"] and c["name"] == "月蛾" and not c.get("locked"))
+    assert template["locked"] is False
 
 
 def test_wake_without_model_config_is_refused():
@@ -315,10 +340,11 @@ def test_cards_draft_happy_path_uses_default_model(monkeypatch):
     mock_completion(monkeypatch, json.dumps(draft_payload()), seen)
     r = result("cards.draft", {"inspiration": "an orbital lantern keeper"})
     assert r["name"] == "Aster"
+    assert r["user_name"] == "visitor"   # who "you" are in the world rides the draft
     assert r["world_entries"][0]["keys"] == ["Orbital Garden"]
     assert r["seed_goals"] == ["Map the mirror-season drift", "Welcome careful visitors"]
     assert r["theme_color"] == "#7C5CFF"
-    assert r["avatar_svg"].startswith("<svg")
+    assert "avatar_svg" not in r          # the draft no longer auto-generates an avatar
     assert r["embodiment"] == "literal"
     payload = seen[0]["payload"]
     assert payload["model"] == "test/model"
@@ -333,8 +359,38 @@ def test_cards_draft_invalid_json_is_clear_error_and_no_save(monkeypatch):
     err = rpc_error("cards.draft", {"inspiration": "keep this exact text"})
     assert err["code"] == -32050
     assert "strict JSON" in err["message"]
-    assert err["data"]["kind"] == "draft_json"
-    assert not H.user_cards_dir().exists()
+
+
+def test_card_rewrite_field_with_instruction(monkeypatch):
+    set_defaults()
+    seen = []
+    mock_completion(monkeypatch, "  A warmer, punchier tagline.  ", seen)
+    r = result("card.rewrite_field", {
+        "field": "tagline", "value": "old line",
+        "instruction": "make it warmer", "context": "Name: Aster",
+    })
+    assert r == {"field": "tagline", "text": "A warmer, punchier tagline."}
+    user_msg = seen[0]["payload"]["messages"][1]["content"]
+    assert "make it warmer" in user_msg        # the instruction is forwarded
+    assert "old line" in user_msg              # the current value is forwarded
+    assert "Aster" in user_msg                 # context for consistency
+
+
+def test_card_rewrite_field_empty_instruction_is_free_rephrase(monkeypatch):
+    set_defaults()
+    seen = []
+    mock_completion(monkeypatch, "```\nfreshly rephrased\n```", seen)  # fence stripped
+    r = result("card.rewrite_field", {"field": "description", "value": "v"})
+    assert r["text"] == "freshly rephrased"
+    assert "Rephrase it freely" in seen[0]["payload"]["messages"][1]["content"]
+
+
+def test_card_rewrite_field_empty_model_output_errors(monkeypatch):
+    set_defaults()
+    mock_completion(monkeypatch, "   ")
+    err = rpc_error("card.rewrite_field", {"field": "tagline", "value": "x"})
+    assert err["code"] == -32050
+    assert err["data"]["kind"] == "rewrite"
 
 
 def test_cards_draft_rejects_parallel_schema(monkeypatch):
@@ -348,24 +404,6 @@ def test_cards_draft_rejects_parallel_schema(monkeypatch):
     assert "unexpected: extra" in err["data"]["detail"]
 
 
-@pytest.mark.parametrize(
-    "svg",
-    [
-        "<svg viewBox=\"0 0 64 64\"><script>alert(1)</script></svg>",
-        "<svg onload=\"alert(1)\" viewBox=\"0 0 64 64\"><circle r=\"2\"/></svg>",
-        "<svg viewBox=\"0 0 64 64\"><foreignObject></foreignObject></svg>",
-        "<svg viewBox=\"0 0 64 64\">" + ("<circle/>" * 300) + "</svg>",
-    ],
-)
-def test_cards_draft_svg_sanitizer_drops_unsafe_but_keeps_draft(monkeypatch, svg):
-    set_defaults()
-    mock_completion(monkeypatch, json.dumps(draft_payload(svg)))
-    r = result("cards.draft", {"inspiration": "unsafe svg attempt"})
-    assert r["name"] == "Aster"
-    assert "avatar_svg" not in r
-    assert r["notes"] and "avatar_svg dropped" in r["notes"][0]
-
-
 def test_card_save_roundtrips_new_lunamoth_extension_fields():
     card = H.draft_to_card({
         **draft_payload(),
@@ -374,7 +412,8 @@ def test_card_save_roundtrips_new_lunamoth_extension_fields():
     r = result("card.save", {"data": card})
     raw = result("card.read", {"path": r["path"]})["raw"]
     ext = raw["data"]["extensions"]["lunamoth"]
-    assert ext["avatar_svg"].startswith("<svg")
+    assert "avatar_svg" not in ext        # avatar is a separate sidecar, not drafted inline
+    assert ext["user_name"] == "visitor"  # who "you" are rides the drafted card
     # Presentation theme is now the dual {primary, secondary}; legacy single
     # theme_color folds into primary on save.
     assert ext["theme"]["primary"] == "#7C5CFF"
@@ -386,7 +425,7 @@ def test_card_save_roundtrips_new_lunamoth_extension_fields():
     assert raw["data"]["character_book"]["entries"][0]["keys"] == ["Orbital Garden"]
     listed = result("cards.list")
     mine = next(c for c in listed if c["path"] == r["path"])
-    assert mine["avatar_svg"].startswith("<svg")
+    assert mine["avatar_svg"] == ""       # no inline avatar (sidecar-only now)
     assert mine["theme_color"] == "#7C5CFF"
     assert mine["tagline"] == "A gentle keeper of orbital lanterns"
 

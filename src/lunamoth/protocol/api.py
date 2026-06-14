@@ -20,6 +20,7 @@ from .events import Event
 
 # Re-exported for frontends (the UI shows token estimates without touching core).
 from ..core.context import estimate_tokens  # noqa: F401
+from .. import presence
 
 # Operator words that grant a permission request — shared by every frontend.
 GRANT_WORDS = frozenset({"y", "yes", "allow", "ok", "同意", "允许", "是"})
@@ -53,14 +54,15 @@ class AttachInfo:
     stream_user(opening_text) · 'none' = continue silently.
 
     NOTE: attach() today only ever decides 'greeting' (first meeting) or 'none'.
-    'arrival' and 'probe' are RESERVED, forward-compat values — the card's
-    on_attach arrival prompt (agent.arrival_prompt / presence.prompts) is wired
-    end-to-end here and in every frontend, but the presence model deliberately
-    keeps a RE-attach silent (the chara registers you only when you speak), so
-    nothing currently emits them. They stay in the contract (and the frontend
-    branches stay live) for the on_attach hook / GM-layer work; do NOT mistake
-    them for dead code, and do NOT remove the 'event' stream path — stream_event
-    uses it for world events independently of these openings."""
+    'arrival' and 'probe' are RESERVED, forward-compat values: the presence model
+    deliberately keeps a RE-attach silent (the chara registers you only when you
+    speak — the entered marker carries that, see _presence_marker), so nothing
+    currently emits them. They stay in the contract (and the frontend branches
+    stay live) for the future GM/world-event layer; do NOT mistake them for dead
+    code, and do NOT remove the 'event' stream path — stream_event uses it for
+    world events independently of these openings. (The old card on_attach/on_detach
+    'reaction turn' hook was removed; on_attach/on_detach now only override the
+    neutral enter/leave marker TEXT — see presence.marker_text.)"""
     char_name: str
     lang: str
     mode: str
@@ -227,12 +229,12 @@ class CharaHandle:
         self._visit_announced = False
 
     def _presence_marker(self, kind: str) -> str:
-        """A NEUTRAL platform fact (the platform never roleplays presence). In
-        the card's language so the chara reads it plainly."""
-        zh = self._agent.lang == "zh"
-        if kind == "entered":
-            return "［操作者进入了对话。］" if zh else "[The operator joined the conversation.]"
-        return "［操作者离开了对话。］" if zh else "[The operator left the conversation.]"
+        """The neutral '<user> entered/left the conversation' FACT. Names the
+        operator by {{user}} in the card's language; a card MAY override the
+        wording via extensions.lunamoth.on_attach / on_detach (see
+        presence.marker_text). A passive context line — never a roleplay turn."""
+        a = self._agent
+        return presence.marker_text(a.character, kind, a.char_name(), a.settings.user_name, a.lang == "zh")
 
     def record_greeting(self, text: str) -> None:
         """Commit a displayed card greeting (first_mes) to the conversation."""

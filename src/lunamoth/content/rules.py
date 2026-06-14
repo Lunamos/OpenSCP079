@@ -55,13 +55,17 @@ _RULES = {
 }
 
 # The last, strongest line before generation (SillyTavern post-history style).
+# Two equally-weighted reminders: stay in character, AND make real things — the
+# in-character voice and the no-fabrication standard both matter at the final slot.
 _CLOSER = {
     "en": (
-        "Remember: what you make here is real. Make it — don't describe making it. "
-        "Claim nothing done that isn't truly in your workspace."
+        "Remember you are {{char}}: stay fully in character, in your own voice and world. "
+        "And what you make here is real — make it, don't describe making it, and claim "
+        "nothing done that isn't truly in your workspace."
     ),
     "zh": (
-        "记住：你在这里做出来的东西是真的。去做——而不是描述你在做。"
+        "记住你就是{{char}}：保持入戏，用 ta 自己的声音、在 ta 的世界里说话。"
+        "同时，你在这里做出来的东西是真的——去做，而不是描述你在做；"
         "凡是没有真正存在于你 workspace 里的，都不要宣称已完成。"
     ),
 }

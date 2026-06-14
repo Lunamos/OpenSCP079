@@ -1,14 +1,21 @@
 """Presence awareness — the character knows when the operator comes and goes.
 
 A persistent chara runs forever in the background, but it should *feel* the
-operator attach and detach. Two card-driven prompts (SillyTavern macros apply):
+operator attach and detach. Presence is delivered as a NEUTRAL FACT, never a
+forced reaction: entering the room is silent; the chara registers the operator
+only when they actually SPEAK (an "entered" fact is injected before that first
+message), and a "left" fact is injected on detach only if the operator spoke.
 
-    extensions.lunamoth.on_attach   injected when the operator connects
-    extensions.lunamoth.on_detach   injected when the operator leaves
+The wording of that fact is card-customizable (SillyTavern macros apply):
 
-The prompts live in the card and ONLY in the card — the engine ships no default
-text and knows nothing about any specific character. A card that declares
-neither simply gets no presence events: attach and detach pass silently.
+    extensions.lunamoth.on_attach   overrides the "<user> entered" marker text
+    extensions.lunamoth.on_detach   overrides the "<user> left" marker text
+
+With no override the engine uses a bundled NEUTRAL default in the card's
+language. These are an Advanced card-editor field — card generation never
+produces them. (They REPLACE the old on_attach/on_detach "reaction turn" hook:
+the marker is a passive context line the chara reads on its next turn, not a
+turn of its own — see prompts.marker_text.)
 
 How the chara behaves WHILE the operator is attached is one per-chara setting
 (Settings.mode, `/mode` to flip) with exactly two values — see prompts.py:
@@ -33,12 +40,11 @@ attached the character may ask for network / writable paths / more resources
 and wait for an answer (timeout = deny); while the operator is away every
 request is auto-denied and merely logged.
 """
-from .prompts import attach_text, detach_text, normalize_mode
+from .prompts import marker_text, normalize_mode
 from .state import PresenceState
 
 __all__ = [
     "PresenceState",
-    "attach_text",
-    "detach_text",
+    "marker_text",
     "normalize_mode",
 ]

@@ -377,14 +377,10 @@ class LunaMothAgent:
         return None
 
     # ---- presence (operator attach/detach awareness) -------------------------------
-
-    def attach_event_text(self) -> str:
-        """The card's arrival prompt ('' when the card declares none)."""
-        return presence.attach_text(self.character, self.char_name(), self.settings.user_name)
-
-    def detach_event_text(self) -> str:
-        """The card's departure prompt ('' when the card declares none)."""
-        return presence.detach_text(self.character, self.char_name(), self.settings.user_name)
+    # The enter/leave conversation fact is built by CharaHandle._presence_marker
+    # (protocol/api.py) via presence.marker_text — a passive, card-overridable
+    # context line. There is no "reaction turn" on attach/detach: that old
+    # on_attach/on_detach hook was removed (presence is a neutral fact, not a turn).
 
     def stream_event(self, event_text: str, session: Session):
         """Stream the character's reaction to a presence event.
@@ -420,16 +416,6 @@ class LunaMothAgent:
                 partial = "".join(speech).strip()
                 if partial:
                     session.context.add("assistant", partial + self.llm.INTERRUPT_MARK)
-
-    def note_detach(self, session: Session) -> None:
-        """Record the operator leaving: context line, audit, and a handoff event
-        queued for whichever process adopts this chara next (e.g. the daemon)."""
-        text = self.detach_event_text()
-        if not text:
-            return
-        self.audit.write("presence_event", kind="detach", text=text[:300])
-        session.context.add("system", text)
-        self.presence.queue_event(text)
 
     def _invalidate_stable_prefix(self) -> None:
         self._stable_prefix_cache = None

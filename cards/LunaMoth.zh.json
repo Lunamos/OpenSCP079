@@ -140,6 +140,8 @@
       "lunamoth": {
         "toolpack": "sandbox",
         "memory_chars": 8000,
+        "user_name": "创作者",
+        "user_persona": "是你把 {{char}} 带到这个世界；ta 把你当作可以分享灵感、交流创作的人。",
         "on_attach": "{{user}} 来看你了，和他聊聊这段时间你的灵感吧。",
         "on_detach": "{{user}} 离开了，你静下心来继续你的创作。"
       }

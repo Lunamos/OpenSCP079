@@ -279,9 +279,47 @@ product backlog behind it.
   boost, but only after the core stabilizes.
 - **Multimodal** — detected and shown as "not enabled this version"; the skeleton
   is left in place for it.
-- **Avatar image upload** — v1 is SVG-only (data-URI size limits); raster upload
-  later.
 - **Panel polish leftovers** — memory entry-level editing and goal checkbox
   editing in the chat drawer are still read-only; a board-level context ring +
   ⚡ high-load chip needs `serve` to expose a lightweight last-activity / resource
   sample.
+- **In-character closer for tool-less cards** *(low priority)* — the post-history
+  closer (`content/rules.py:_CLOSER`) carries two reminders now: stay-in-character
+  AND make-real-things. But the whole slot is tool-gated (`agent.py:_post_history_slot`
+  returns "" with no tools, asserted by `test_rules.py:62`), so a pure-roleplay
+  card with no tools gets the in-character anchor only at the TOP (render_system),
+  never at the closer. A pure-roleplay tavern card arguably needs the closing
+  in-character nudge most. Fix later: split the closer so the in-character half
+  fires even tool-less while the no-fabrication half stays tool-gated (adjust the
+  gate + `test_rules.py:62`). Deferred — tool-less pure-roleplay is not a current
+  focus.
+- **Self-contained desktop app (signed DMG / AppImage)** — the consumer install
+  should be "drag LunaMoth.app to /Applications, double-click, it works" — not
+  the `curl|bash` CLI install (that stays the dev/terminal path). The hard part:
+  `apps/desktop` is a THIN Electron shell that spawns the Python backend
+  (`lunamoth desktop`); today `electron-builder` (`npm run dist`) bundles only
+  the shell, and `main.cjs` finds the backend via a dev checkout or a (currently
+  mismatched) installed path — so the DMG today is NOT self-contained and shows
+  "No backend found". Plan:
+  1. **Freeze the backend** — PyInstaller/py2app into a standalone `lunamoth`
+     binary, OR ship a uv-managed standalone Python + the venv as a folder.
+     Decision point: PyInstaller (one binary, smaller) vs bundled-venv (simpler,
+     larger). KEY constraint: the supervisor RE-INVOKES the backend as
+     subprocesses (`lunamoth serve NAME --stdio` per chara) — the frozen binary
+     must support re-exec, and the spawn command must point at the bundled
+     binary (not `python -m lunamoth…`). The OS-jail isolation (`sandbox-exec`
+     on macOS, the `isolation.py` argv builders) must also work from inside the
+     .app bundle.
+  2. **Bundle it** — electron-builder `extraResources` puts the frozen backend
+     in the .app; `main.cjs`, when `app.isPackaged`, spawns
+     `process.resourcesPath/backend/…` instead of the dev/installed discovery.
+  3. **Sign + notarize** (Apple Developer ID) — otherwise Gatekeeper blocks the
+     .app on any other Mac. Linux: AppImage has the same bundling shape, no
+     signing.
+  - **Bug to fix regardless** (independent of the DMG work): `main.cjs`
+    `installedLauncher()` looks for `~/.lunamoth/bin/lunamoth`, but `install.sh`
+    puts the shim at `~/.local/bin/lunamoth` (and `~/.lunamoth/bin/` holds only
+    `uv`). So even today the Electron app can't find a `curl|bash`-installed
+    backend — fix the path (check `~/.local/bin/lunamoth` too).
+  - Icon assets already exist (`apps/desktop/assets/icon.png` + the menu-bar
+    `trayTemplate*`). The menu-bar-resident idea (above) composes with this.

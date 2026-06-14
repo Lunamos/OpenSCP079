@@ -139,6 +139,8 @@
       "lunamoth": {
         "toolpack": "sandbox",
         "memory_chars": 8000,
+        "user_name": "Creator",
+        "user_persona": "You brought {{char}} into being; they share their inspirations and creative work with you.",
         "on_attach": "{{user}} has come to see you — share the inspirations you've gathered since they were last here.",
         "on_detach": "{{user}} has left. You settle back into quiet and continue your work."
       }

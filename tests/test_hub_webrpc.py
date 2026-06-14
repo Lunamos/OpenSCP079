@@ -88,10 +88,10 @@ def test_messaging_save_masks_and_roundtrips_secrets():
     meta = wake_session()
     cfg = {"enabled": True,
            "adapters": {"weixin": {"base_url": "https://ilink.example/v1", "bot_token": "tok-123"},
-                        "wecom": {"corp_secret": "ssh", "agent_id": "7"}}}
+                        "qq": {"access_token": "ssh", "self_id": "7"}}}
     saved = result("messaging.save", {"name": meta.name, "config": cfg})
     assert saved["config"]["adapters"]["weixin"]["bot_token"] == H._SECRET_MASK
-    assert saved["config"]["adapters"]["wecom"]["corp_secret"] == H._SECRET_MASK
+    assert saved["config"]["adapters"]["qq"]["access_token"] == H._SECRET_MASK
     assert saved["config"]["adapters"]["weixin"]["base_url"] == "https://ilink.example/v1"
 
     # On disk: real secrets, 0600.
@@ -132,13 +132,13 @@ def test_messaging_save_merges_per_the_web_form_contract():
     result("messaging.save", {"name": meta.name, "config": {
         "enabled": True,
         "adapters": {"weixin": {"base_url": "https://ilink.example/v1", "bot_token": "tok-123"}}}})
-    # Saving the wecom tab must not drop the weixin adapter.
+    # Saving the qq tab must not drop the weixin adapter.
     result("messaging.save", {"name": meta.name, "config": {
         "enabled": True, "allowed_senders": ["alice"],
-        "adapters": {"wecom": {"corp_id": "c1", "corp_secret": "s1"}}}})
+        "adapters": {"qq": {"ws_url": "ws://c1", "access_token": "s1"}}}})
     on_disk = json.loads((meta.root / "messaging.json").read_text(encoding="utf-8"))
     assert on_disk["adapters"]["weixin"]["bot_token"] == "tok-123"
-    assert on_disk["adapters"]["wecom"]["corp_id"] == "c1"
+    assert on_disk["adapters"]["qq"]["ws_url"] == "ws://c1"
     assert on_disk["allowed_senders"] == ["alice"]
     # Editing one weixin field with the secret omitted keeps the secret.
     result("messaging.save", {"name": meta.name, "config": {
@@ -148,10 +148,10 @@ def test_messaging_save_merges_per_the_web_form_contract():
     assert on_disk["adapters"]["weixin"]["base_url"] == "https://ilink.example/v2"
     # Explicit null deletes a field / a platform.
     result("messaging.save", {"name": meta.name, "config": {
-        "adapters": {"weixin": {"bot_token": None}, "wecom": None}}})
+        "adapters": {"weixin": {"bot_token": None}, "qq": None}}})
     on_disk = json.loads((meta.root / "messaging.json").read_text(encoding="utf-8"))
     assert "bot_token" not in on_disk["adapters"]["weixin"]
-    assert "wecom" not in on_disk["adapters"]
+    assert "qq" not in on_disk["adapters"]
 
 
 # ---- avatar: generate / upload / read ---------------------------------------------
@@ -454,40 +454,37 @@ def test_user_card_shadows_builtin_with_annotation_but_never_other_user_cards():
     assert any(c.get("shadows", "").endswith("Quinn.zh.json") for c in same_name)
 
 
-# ---- aux models (webui-needs #14) --------------------------------------------------
+# ---- generation helpers use the system default model (no per-task aux) -------------
 
-def test_aux_models_persist_and_route(monkeypatch):
+def test_generation_helpers_use_system_default_model(monkeypatch):
     set_defaults()
-    pub = result("defaults.set", {"aux_models": {"avatar": "small/fast", "draft": "big/writer"}})
-    assert pub["aux_models"] == {"avatar": "small/fast", "draft": "big/writer"}
-    # survives an unrelated defaults write (raw-preserving save)
-    pub = result("defaults.set", {"model": "main/model"})
-    assert pub["aux_models"]["avatar"] == "small/fast"
-    # cards.draft falls back to the aux 'draft' model when none is passed
-    seen = {}
-    canned = json.dumps({"name": "N", "description": "x" * 200, "first_mes": "hi",
-                         "world_entries": [{"keys": ["a"], "content": "c", "constant": False},
-                                           {"keys": ["b"], "content": "d", "constant": False}],
-                         "seed_goals": ["g"], "tagline": "t", "theme_color": "#5B9FD4",
-                         "avatar_svg": GOOD_SVG})
+    seen = []
 
     def fake_complete(defaults, system, user, model="", **kw):
-        seen["model"] = model
-        return canned
+        seen.append(model)
+        return "rephrased line"
 
     monkeypatch.setattr(H, "_complete", fake_complete)
-    result("cards.draft", {"inspiration": "a moth"})
-    assert seen["model"] == "big/writer"
-    result("cards.draft", {"inspiration": "a moth", "model": "explicit/win"})
-    assert seen["model"] == "explicit/win"
-    # avatar_generate uses the GLOBAL DEFAULT model, NOT the aux 'avatar' model.
-    monkeypatch.setattr(H, "_complete", lambda *a, **k: (seen.update(avg=k.get("model", "")) or GOOD_SVG))
-    result("card.avatar_generate", {"description": "a moth"})
-    assert seen["avg"] == ""
-    # empty value clears back to "use the main model"; unknown task is an error
-    pub = result("defaults.set", {"aux_models": {"avatar": ""}})
-    assert "avatar" not in pub["aux_models"]
-    assert rpc_error("defaults.set", {"aux_models": {"nonsense": "x"}})["code"] == -32602
+    # rewrite passes NO per-task model — _complete gets "" and fills the default.
+    result("card.rewrite_field", {"field": "tagline", "value": "x"})
+    assert seen == [""]
+
+    # cards.draft likewise uses the default (model="") — even if a model is passed in.
+    seen.clear()
+    canned = json.dumps({"name": "N", "user_name": "friend", "description": "x" * 200, "first_mes": "hi",
+                         "world_entries": [{"keys": ["a"], "content": "c", "constant": False},
+                                           {"keys": ["b"], "content": "d", "constant": False}],
+                         "seed_goals": ["g"], "tagline": "t", "theme_color": "#5B9FD4"})
+    monkeypatch.setattr(H, "_complete", lambda *a, **k: (seen.append(k.get("model", "")) or canned))
+    result("cards.draft", {"inspiration": "a moth", "model": "ignored/now"})
+    assert seen == [""]
+
+
+def test_defaults_no_longer_carries_aux_models():
+    set_defaults()
+    pub = result("defaults.set", {"model": "main/model", "aux_models": {"avatar": "x"}})
+    assert "aux_models" not in pub          # aux machinery removed
+    assert pub["model"] == "main/model"     # normal fields still persist
 
 
 def test_default_flag_survives_tag_display_truncation():

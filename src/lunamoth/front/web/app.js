@@ -22,10 +22,88 @@ function el(tag, attrs, ...children) {
 }
 const $ = (id) => document.getElementById(id);
 
+/* The one "AI is thinking / generating" node — shared by card & avatar generation
+   and per-field AI rewrites so every wait speaks the same visual language as the
+   chat-thinking indicator (a breathing dot + label). opts.block = field-fill box. */
+function thinkingEl(label, opts) {
+  const o = opts || {};
+  return el("div", { class: "lm-thinking" + (o.block ? " block" : "") },
+    el("span", { class: "lm-think-label" }, label || t("ai-thinking")));
+}
+
+/* Per-field AI rewrite: a "✦ AI" button on an editable field. Click → a small
+   popover for an instruction (empty = free rephrase) → the field becomes a
+   shared loading box → the rewritten text fills it. Used by the card editor,
+   the wake content step, and the create-shape review. */
+function aiEditButton(fieldNode, fieldKey, charName) {
+  const btn = el("button", { class: "ai-edit-btn", type: "button", title: t("ai-edit-title") }, t("ai-edit"));
+  btn.addEventListener("click", (ev) => { ev.stopPropagation(); openAiFieldEdit(fieldNode, fieldKey, charName); });
+  return btn;
+}
+
+function openAiFieldEdit(fieldNode, fieldKey, charName) {
+  const input = el("textarea", { class: "ai-edit-input", placeholder: t("ai-edit-ph") });
+  const go = el("button", { class: "btn primary", type: "button" }, t("ai-edit-go"));
+  const cancel = el("button", { class: "btn text", type: "button" }, t("cancel"));
+  const overlay = el("div", { class: "ai-edit-overlay" },
+    el("div", { class: "ai-edit-pop" },
+      el("h4", null, t("ai-edit-title")), input,
+      el("div", { class: "acts" }, cancel, go)));
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+  cancel.addEventListener("click", close);
+  go.addEventListener("click", () => { const instr = input.value.trim(); close(); runFieldRewrite(fieldNode, fieldKey, charName, instr); });
+  document.body.appendChild(overlay);
+  input.focus();
+}
+
+/* Reusable editable card field + labelled block (mirrors the card editor's local
+   field()/block()), so the wake content step renders the same way as the editor. */
+function cardFieldEl(value, phKey, editable) {
+  const div = el("div", { class: "cve-text" }, value || "");
+  if (editable) {
+    div.setAttribute("contenteditable", "plaintext-only");
+    if (phKey) div.dataset.ph = t(phKey);
+  }
+  return div;
+}
+function cardBlockEl(labelKey, node, fieldKey, charName) {
+  const h = el("h4", null, t(labelKey));
+  if (fieldKey) h.appendChild(aiEditButton(node, fieldKey, charName));
+  return el("div", { class: "cv-block" }, h, node);
+}
+
+async function runFieldRewrite(fieldNode, fieldKey, charName, instruction) {
+  const original = fieldNode.textContent;
+  const loading = thinkingEl(t("ai-thinking"), { block: true });
+  fieldNode.style.display = "none";
+  fieldNode.parentNode.insertBefore(loading, fieldNode);
+  try {
+    const r = await hub.call("card.rewrite_field", {
+      field: fieldKey, value: original, instruction: instruction || "",
+      context: charName ? ("Name: " + charName) : "",
+    }, 180000);
+    fieldNode.textContent = (r && r.text) || original;
+  } catch (e) {
+    toast(rpcErrText(e) || t("ai-edit-failed"), true);
+  } finally {
+    loading.remove();
+    fieldNode.style.display = "";
+  }
+}
+
 function toast(msg, isErr) {
   const node = el("div", { class: "toast" + (isErr ? " err" : "") }, msg);
   $("toasts").appendChild(node);
   setTimeout(() => node.remove(), isErr ? 5200 : 3200);
+}
+
+// A sticky toast with a spinner for a slow API call (e.g. export). Returns a
+// dismiss fn — call it the moment the call resolves so the wait is never silent.
+function workingToast(msg) {
+  const node = el("div", { class: "toast" }, el("span", { class: "spin" }), " " + msg);
+  $("toasts").appendChild(node);
+  return () => node.remove();
 }
 
 /* ---------- global error backstop（Hermes error-boundary 的 vanilla 版） ----------
@@ -554,10 +632,18 @@ function renderBoard() {
         title: live ? t("act-sleep") : t("act-wake-up"),
         onclick: async (ev) => {
           ev.stopPropagation();
+          const btn = ev.currentTarget;
+          if (btn.disabled) return;
+          btn.disabled = true;                       // no dead double-click
+          btn.textContent = "";
+          btn.appendChild(el("span", { class: "spin" }));  // working state (start/stop can take seconds)
           try {
             await hub.call(live ? "session.stop" : "session.start", { name: s.name }, 30000);
-            refreshHub();
-          } catch (e) { toast(e.message, true); }
+            refreshHub();                            // re-renders the card with the new power state
+          } catch (e) {
+            btn.disabled = false; btn.textContent = "⏻";   // revert on failure
+            toast(rpcErrText(e), true);
+          }
         },
       }, "⏻"),
       el("button", { title: "⋯", onclick: (ev) => { ev.stopPropagation(); cardMenu(ev, s); } }, "⋯")));
@@ -627,11 +713,13 @@ function cardMenu(ev, s) {
   const menu = el("div", { class: "palette open", style: `position:fixed;left:${Math.min(ev.clientX, innerWidth - 240)}px;top:${ev.clientY + 8}px;bottom:auto;transform:none;width:220px;z-index:90` },
     el("div", { class: "row", onclick: async () => {
       closeMenus();
+      const done = workingToast(t("exporting"));
       try {
         const r = await hub.call("session.export", { name: s.name }, 120000);
+        done();
         toast(t("exported", { path: r.path }));
         hub.call("open.path", { path: r.path, reveal: true }).catch(() => {});
-      } catch (e) { toast(rpcErrText(e), true); }
+      } catch (e) { done(); toast(rpcErrText(e), true); }
     } }, t("menu-export")));
   menu.dataset.menu = "1";
   document.body.appendChild(menu);
@@ -712,11 +800,16 @@ function openDeleteModal(s) {
         el("div", null, el("i", null, "✕"), el("div", null, t("del-3"))),
         el("div", null, el("i", null, "≋"), el("div", null, t("del-4")))),
       el("div", { class: "soften" }, t("del-soften", { name: s.char_name })),
-      el("button", { class: "btn soft", style: "width:100%;margin-bottom:14px", onclick: async () => {
+      el("button", { class: "btn soft", style: "width:100%;margin-bottom:14px", onclick: async (ev) => {
+        const btn = ev.currentTarget;
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const done = workingToast(t("exporting"));
         try {
           const r = await hub.call("session.export", { name: s.name }, 120000);
+          done();
           toast(t("exported", { path: r.path }));
-        } catch (e) { toast(e.message, true); }
+        } catch (e) { done(); btn.disabled = false; toast(rpcErrText(e), true); }
       } }, t("del-export")),
       step1, step2, step3,
       el("div", { class: "acts" },
@@ -775,12 +868,11 @@ async function duplicateCard(c) {
 
 let _pendingSeq = 0;
 
-/* The model that will actually do the draft = aux 'draft' override or main.
-   Mirrors the backend's _aux_model('draft') fallback exactly. */
+/* Card drafting (and avatar/rewrite) always use the system default model — there
+   are no per-task aux models. The override lives only on wake / chara settings. */
 function effectiveDraftModel() {
   const d = (state.hub && state.hub.defaults) || {};
-  const aux = d.aux_models && typeof d.aux_models === "object" ? d.aux_models : {};
-  return String(aux.draft || d.model || "");
+  return String(d.model || "");
 }
 
 function tentativeName(inspiration) {
@@ -907,29 +999,35 @@ function renderDeck() {
   // pending generations render first — they are NOT real cards yet
   for (const pd of state.pendingDrafts) grid.appendChild(pendingSpine(pd));
   for (const c of cards) {
-    const badge = c.frozen
-      ? el("div", { class: "lock-badge" }, t("deck-readonly"))
+    const copyBtn = el("button", { onclick: async (ev) => {
+      ev.stopPropagation();
+      try { await duplicateCard(c); toast(t("copied")); refreshHub(); }
+      catch (e) { toast(e.message, true); }
+    } }, t("deck-copy"));
+    const wakeBtn = el("button", { class: "wake", onclick: (ev) => { ev.stopPropagation(); ensureModel(() => openWakeSheet(c)); } }, t("deck-wake"));
+    // Locked card (a living chara's own card): browse + copy + wake (wake copies);
+    // never edit in place. Unlocked template: wake + view/edit + copy.
+    const badge = c.locked
+      ? el("div", { class: "lock-badge" }, c.owner ? t("deck-owned", { name: c.owner }) : t("deck-readonly"))
       : (c.draft ? el("div", { class: "draft-badge" }, t("deck-draft")) : null);
-    const acts = el("div", { class: "spine-acts" },
-      el("button", { class: "wake", onclick: (ev) => { ev.stopPropagation(); ensureModel(() => openWakeSheet(c)); } }, t("deck-wake")),
-      el("button", { onclick: (ev) => { ev.stopPropagation(); viewCard(c); } }, t("deck-view")),
-      c.draft ? el("button", { onclick: (ev) => { ev.stopPropagation(); ensureModel(() => regenerateDraftCard(c)); } }, t("deck-regen")) : null,
-      el("button", { onclick: async (ev) => {
-        ev.stopPropagation();
-        try {
-          await duplicateCard(c);
-          toast(t("copied"));
-          refreshHub();
-        } catch (e) { toast(e.message, true); }
-      } }, t("deck-copy")));
+    const acts = c.locked
+      ? el("div", { class: "spine-acts" }, wakeBtn, copyBtn)
+      : el("div", { class: "spine-acts" },
+          wakeBtn,
+          el("button", { onclick: (ev) => { ev.stopPropagation(); viewCard(c); } }, t("deck-view")),
+          c.draft ? el("button", { onclick: (ev) => { ev.stopPropagation(); ensureModel(() => regenerateDraftCard(c)); } }, t("deck-regen")) : null,
+          copyBtn);
     const face = cardVisual(c, `face ${paletteClass(c.name)}`);
     if (badge) face.appendChild(badge);
     face.appendChild(acts);
-    grid.appendChild(el("div", { class: "spine", onclick: () => viewCard(c) },
+    const sub = c.locked && c.owner
+      ? t("deck-owned", { name: c.owner })
+      : [c.tagline || c.world, c.builtin ? t("deck-builtin") : "", ...(c.tags || [])].filter(Boolean).slice(0, 3).join(" · ");
+    grid.appendChild(el("div", { class: "spine" + (c.locked ? " locked" : ""), onclick: () => viewCard(c) },
       face,
       el("div", { class: "sbody" },
         el("div", { class: "sname" }, el("b", null, c.name), el("span", { class: "chip" }, c.lang)),
-        el("div", { class: "sworld" }, [c.tagline || c.world, c.builtin ? t("deck-builtin") : "", ...(c.tags || [])].filter(Boolean).slice(0, 3).join(" · ")))));
+        el("div", { class: "sworld" }, sub))));
   }
 }
 $("deck-search").addEventListener("input", renderDeck);
@@ -946,8 +1044,9 @@ async function viewCard(c) {
   } catch (e) { toast(rpcErrText(e), true); return; }
   const ext = full.extensions && full.extensions.lunamoth ? full.extensions.lunamoth : {};
   const isJson = !!full.raw;
-  // builtin cards the backend refuses to save; frozen USER cards stay editable
-  const editable = !c.builtin && isJson;
+  // Editable = a user template. Builtins are read-only (copy to edit); a LOCKED
+  // card (a living chara's own card) is browse-only — duplicate or re-wake to change.
+  const editable = !c.builtin && !c.locked && isJson;
   const card = { name: full.name, theme: c.theme || (ext.theme || null),
                  theme_color: c.theme_color || ext.theme_color || "",
                  avatar_uri: c.avatar_uri || "", avatar_svg: c.avatar_svg || ext.avatar_svg || "" };
@@ -970,8 +1069,12 @@ async function viewCard(c) {
     }
     return div;
   }
-  const block = (labelKey, node, has) => (editable || has)
-    ? el("div", { class: "cv-block" }, el("h4", null, t(labelKey)), node) : null;
+  const block = (labelKey, node, has, fieldKey) => {
+    if (!(editable || has)) return null;
+    const h = el("h4", null, t(labelKey));
+    if (editable && fieldKey) h.appendChild(aiEditButton(node, fieldKey, c.name || full.name));
+    return el("div", { class: "cv-block" }, h, node);
+  };
 
   const nameField = field(full.name);
   nameField.classList.add("cve-name");
@@ -991,6 +1094,17 @@ async function viewCard(c) {
   const goalsText = (Array.isArray(ext.goals) ? ext.goals : []).map(String).join("\n");
   const goalsField = field(goalsText);
   const notesField = field(full.creator_notes);
+  // Advanced: override the neutral enter/leave conversation markers (passive fact
+  // lines, {{user}}/{{char}} macros apply). Empty = the engine's neutral default.
+  const onAttachField = field(String(ext.on_attach || ""), "cve-presence-ph");
+  const onDetachField = field(String(ext.on_detach || ""), "cve-presence-ph");
+  const advanced = (editable || ext.on_attach || ext.on_detach)
+    ? el("details", { class: "cv-raw" },
+        el("summary", null, t("cve-advanced")),
+        el("div", { class: "cv-note" }, t("cve-presence-help")),
+        block("cve-on-attach", onAttachField, true, "on_attach"),
+        block("cve-on-detach", onDetachField, true, "on_detach"))
+    : null;
 
   const note = c.builtin ? t("cv-builtin-note")
     : !isJson ? t("cv-png-note")
@@ -1025,6 +1139,11 @@ async function viewCard(c) {
       if (tagline) lm.tagline = tagline; else delete lm.tagline;
       const goals = goalsField.textContent.split("\n").map((s) => s.trim()).filter(Boolean);
       if (goals.length) lm.goals = goals; else delete lm.goals;
+      // Advanced: enter/leave conversation marker overrides (empty → neutral default)
+      const onAttach = onAttachField.textContent.trim();
+      if (onAttach) lm.on_attach = onAttach; else delete lm.on_attach;
+      const onDetach = onDetachField.textContent.trim();
+      if (onDetach) lm.on_detach = onDetach; else delete lm.on_detach;
       // world book: rebuild entries from the line format, keep the book's name
       const tmp = {};
       putSection(tmp, "world_entries", worldField.textContent);
@@ -1054,13 +1173,14 @@ async function viewCard(c) {
         (editable || taglineValue) ? taglineField : null,
         badges)),
     note ? el("div", { class: "cv-note" }, note) : null,
-    block("cve-description", descField, !!full.description),
-    block("cve-personality", persField, !!full.personality),
-    block("cve-scenario", scenField, !!full.scenario),
-    block("cv-first", firstField, !!full.first_mes),
-    block("cve-world", worldField, !!worldText),
-    block("cve-goals", goalsField, !!goalsText),
+    block("cve-description", descField, !!full.description, "description"),
+    block("cve-personality", persField, !!full.personality, "personality"),
+    block("cve-scenario", scenField, !!full.scenario, "scenario"),
+    block("cv-first", firstField, !!full.first_mes, "first_mes"),
+    block("cve-world", worldField, !!worldText, "world_entries"),
+    block("cve-goals", goalsField, !!goalsText, "goals"),
     block("cve-notes", notesField, !!full.creator_notes),
+    advanced,
     full.raw ? el("details", { class: "cv-raw" },
       el("summary", null, t("cv-raw")),
       el("pre", null, JSON.stringify(full.raw, null, 2))) : null,
@@ -1523,13 +1643,82 @@ async function openWakeSheet(card) {
       return opt;
     }));
 
-  const goBtn = el("button", { class: "btn primary big", onclick: async () => {
+  // ---- STEP 1: content editor (wake ≈ edit). Load the card and render the same
+  // editable fields as the card editor, each with a per-field ✦ AI rewrite. ----
+  let fullCard = null;
+  try { fullCard = await hub.call("card.read", { path: card.path }, 20000); } catch (e) { fullCard = null; }
+  const rawCard = (fullCard && fullCard.raw) || { spec: "chara_card_v3", spec_version: "3.0", data: {} };
+  if (!rawCard.data) rawCard.data = {};
+  const ext0 = (rawCard.data.extensions && rawCard.data.extensions.lunamoth) || {};
+  const charName = (fullCard && fullCard.name) || card.name;
+
+  const fName = cardFieldEl(charName, null, true); fName.classList.add("cve-name");
+  const fUserName = cardFieldEl(String(ext0.user_name || ""), "sec-user-name", true);
+  const fUserPersona = cardFieldEl(String(ext0.user_persona || ""), null, true);
+  const fDesc = cardFieldEl((fullCard && fullCard.description) || "", null, true);
+  const fPers = cardFieldEl((fullCard && fullCard.personality) || "", null, true);
+  const fScen = cardFieldEl((fullCard && fullCard.scenario) || "", null, true);
+  const fFirst = cardFieldEl((fullCard && fullCard.first_mes) || "", null, true);
+  const fTagline = cardFieldEl(String(ext0.tagline || card.tagline || ""), "sec-tagline", true);
+  const goalsText = (Array.isArray(ext0.goals) ? ext0.goals : []).map(String).join("\n");
+  const fGoals = cardFieldEl(goalsText, null, true);
+  const book = (fullCard && fullCard.character_book && Array.isArray(fullCard.character_book.entries)) ? fullCard.character_book : null;
+  const worldText = sectionText({ world_entries: (book ? book.entries : []).map((e2) => ({ keys: e2.keys || [], content: e2.content || "", constant: !!e2.constant })) }, "world_entries");
+  const fWorld = cardFieldEl(worldText, null, true);
+  const fOnAttach = cardFieldEl(String(ext0.on_attach || ""), "cve-presence-ph", true);
+  const fOnDetach = cardFieldEl(String(ext0.on_detach || ""), "cve-presence-ph", true);
+
+  const step1Body = el("div", { class: "wake-content" },
+    cardBlockEl("sec-name", fName, null, charName),
+    cardBlockEl("sec-user-name", fUserName, "user_name", charName),
+    cardBlockEl("sec-user-persona", fUserPersona, "user_persona", charName),
+    cardBlockEl("cve-description", fDesc, "description", charName),
+    cardBlockEl("cve-personality", fPers, "personality", charName),
+    cardBlockEl("cve-scenario", fScen, "scenario", charName),
+    cardBlockEl("cv-first", fFirst, "first_mes", charName),
+    cardBlockEl("sec-tagline", fTagline, "tagline", charName),
+    cardBlockEl("cve-goals", fGoals, "goals", charName),
+    cardBlockEl("cve-world", fWorld, "world_entries", charName),
+    cardBlockEl("cve-on-attach", fOnAttach, "on_attach", charName),
+    cardBlockEl("cve-on-detach", fOnDetach, "on_detach", charName));
+
+  function collectCardData() {
+    const data = rawCard.data;
+    data.name = fName.textContent.trim() || charName;
+    rawCard.name = data.name;
+    data.description = fDesc.textContent;
+    data.personality = fPers.textContent;
+    data.scenario = fScen.textContent;
+    data.first_mes = fFirst.textContent;
+    data.extensions = data.extensions || {};
+    const lm = data.extensions.lunamoth = data.extensions.lunamoth || {};
+    const setOrDel = (k, node) => { const v = node.textContent.trim(); if (v) lm[k] = v; else delete lm[k]; };
+    setOrDel("user_name", fUserName);
+    setOrDel("user_persona", fUserPersona);
+    setOrDel("tagline", fTagline);
+    setOrDel("on_attach", fOnAttach);
+    setOrDel("on_detach", fOnDetach);
+    const goals = fGoals.textContent.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (goals.length) lm.goals = goals; else delete lm.goals;
+    if (packInput.value.trim()) lm.toolpack = packInput.value.trim();
+    const tmp = {};
+    putSection(tmp, "world_entries", fWorld.textContent);
+    const entries = (tmp.world_entries || []).map((w, i) => ({ keys: w.keys, content: w.content, constant: w.constant, enabled: true, insertion_order: i }));
+    if (entries.length || (data.character_book && data.character_book.name)) {
+      data.character_book = { name: (data.character_book && data.character_book.name) || data.name, entries };
+    } else { delete data.character_book; }
+    return rawCard;
+  }
+
+  // ---- STEP 2: settings — what TA lives in / thinks with (frozen at wake) ----
+  const goBtn = el("button", { class: "btn primary big" }, t("wake-go"));
+  goBtn.addEventListener("click", async () => {
     goBtn.disabled = true;
     try {
       const entry = await hub.call("session.wake", {
         card: card.path, name: nameInput.value.trim(), isolation,
         model: modelInput.value.trim(), toolpack: packInput.value.trim() || "sandbox",
-        embodiment: emb,
+        embodiment: emb, card_data: collectCardData(),
       }, 60000);
       closeModal();
       await refreshHub();
@@ -1538,11 +1727,9 @@ async function openWakeSheet(card) {
       toast(e.message, true);
       goBtn.disabled = false;
     }
-  } }, t("wake-go"));
+  });
 
-  openModal(el("div", null,
-    el("h2", null, t("wake-title", { name: card.name })),
-    el("div", { class: "sub" }, t("wake-sub")),
+  const step2Body = el("div", { class: "wake-settings" },
     el("div", { class: "field-row" }, el("label", null, t("wake-name")), el("div", { class: "input-like" }, nameInput)),
     el("div", { class: "field-row" }, el("label", null, t("wake-model")),
       el("div", { class: "input-like" }, modelInput), capLine, warnLine),
@@ -1552,20 +1739,40 @@ async function openWakeSheet(card) {
         cardPack ? el("span", { class: "cue" }, t("wake-toolpack-card", { name: cardPack })) : null),
       packPicker),
     el("div", { class: "field-row" }, el("label", null, t("wake-emb")), embGrid),
-    el("div", { class: "adv" },
-      el("div", { class: "adv-head", onclick: (ev) => ev.currentTarget.parentNode.classList.toggle("open") }, t("wake-adv")),
-      el("div", { class: "adv-body" },
-        el("div", { class: "field-row" }, el("label", null, t("wake-iso")), isoSeg),
-        el("div", { class: "field-row" },
-          el("div", { class: "switch-row", style: "font-size:12.5px" },
-            el("b", { style: "font-weight:550" }, t("p-net")),
-            el("small", null, t("p-net-sub")),
-            netSwitch)))),
-    el("div", { class: "acts", style: "margin-top:18px" },
-      el("button", { class: "btn text", onclick: closeModal }, t("cancel")),
-      el("div", { class: "grow" }),
-      goBtn)), true);
-  refreshCaps();
+    el("div", { class: "field-row" }, el("label", null, t("wake-iso")), isoSeg),
+    el("div", { class: "field-row" },
+      el("div", { class: "switch-row", style: "font-size:12.5px" },
+        el("b", { style: "font-weight:550" }, t("p-net")),
+        el("small", null, t("p-net-sub")),
+        netSwitch)));
+
+  // ---- two-step shell ----
+  const container = el("div");
+  function showStep(n) {
+    container.innerHTML = "";
+    const dots = el("div", { class: "wake-steps" },
+      el("i", { class: n === 1 ? "on" : "done" }), el("i", { class: n === 2 ? "on" : "" }));
+    if (n === 1) {
+      container.append(
+        el("h2", null, t("wake-edit-title", { name: charName })), dots,
+        el("div", { class: "sub" }, t("wake-edit-sub")), step1Body,
+        el("div", { class: "acts", style: "margin-top:18px" },
+          el("button", { class: "btn text", onclick: closeModal }, t("cancel")),
+          el("div", { class: "grow" }),
+          el("button", { class: "btn primary big", onclick: () => showStep(2) }, t("wake-continue"))));
+    } else {
+      container.append(
+        el("h2", null, t("wake-title", { name: charName })), dots,
+        el("div", { class: "sub" }, t("wake-sub")), step2Body,
+        el("div", { class: "acts", style: "margin-top:18px" },
+          el("button", { class: "btn text", onclick: () => showStep(1) }, t("wake-back")),
+          el("div", { class: "grow" }),
+          goBtn));
+      refreshCaps();
+    }
+  }
+  showStep(1);
+  openModal(container, true);
 }
 
 /* ============================ CREATE FLOW（工坊：讲述 → 成形 → 落卡） ============================ */
@@ -1921,7 +2128,7 @@ function renderTellStep(root, flow) {
   box.value = flow.origin;
   const inner = el("div", { class: "flow-inner" }, guide, box);
 
-  // which model will do the generation (= aux 'draft' override or main model)
+  // which model will do the generation (always the system default model)
   const model = effectiveDraftModel();
   inner.appendChild(el("div", { class: "gen-model" }, t("gen-with", { model: model || "—" })));
 
@@ -2041,27 +2248,11 @@ function renderShapeStep(root, flow) {
       flow.edited[key] = false;
       renderShapeStep(root, flow);
     } }, t("revert"));
-    const rewriteBtn = el("button", { class: "rewrite", onclick: async () => {
-      rewriteBtn.disabled = true;
-      rewriteBtn.textContent = "…";
-      try {
-        const note = getLangCode() === "zh"
-          ? `\n\n（请只为「${t(labelKey)}」部分换一种写法，其余保持原意；返回完整 JSON。）`
-          : `\n\n(Rewrite only the "${t(labelKey)}" part differently; keep everything else; return full JSON.)`;
-        collect();
-        const fresh = normalizeDraft(await hub.call("cards.draft", { inspiration: flow.origin + note }, 240000));
-        putSection(flow.draft, key, sectionText(fresh, key));
-        versions.push(sectionText(fresh, key));
-        flow.edited[key] = false;
-        renderShapeStep(root, flow);
-      } catch (e) {
-        toast(rpcErrText(e), true);
-        rewriteBtn.disabled = false;
-        rewriteBtn.textContent = t("rewrite");
-      }
-    } }, t("rewrite"));
+    // Directed per-field AI rewrite (natural-language instruction, or free
+    // rephrase when empty) — the same affordance as the editor and the wake step.
+    const aiBtn = aiEditButton(textDiv, key, flow.draft.name || "");
     inner.appendChild(el("div", { class: "sec", "data-sec": key },
-      el("h3", null, t(labelKey), verLabel, revertBtn, rewriteBtn),
+      el("h3", null, t(labelKey), verLabel, revertBtn, aiBtn),
       textDiv));
   }
 
