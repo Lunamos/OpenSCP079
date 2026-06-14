@@ -18,6 +18,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
+// Name the app (menu bar, notifications, dock label) — without this an unpackaged
+// `electron .` dev run shows the generic "Electron". The packaged build gets this
+// from package.json productName + the bundle Info.plist.
+app.setName('LunaMoth')
+
 const URL_LINE = /LunaMoth desktop:\s+(http:\/\/127\.0\.0\.1:\d+\/\S*)/
 // First dev launch may `uv sync` a fresh venv before the server comes up.
 const STARTUP_TIMEOUT_MS = 180_000
@@ -297,6 +302,12 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    // Dock icon: an unpackaged dev run shows the default Electron diamond; set our
+    // own. (Harmless when packaged — the .app bundle icon already wins there.)
+    if (process.platform === 'darwin' && app.dock) {
+      const dockIcon = nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'icon.png'))
+      if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon)
+    }
     createTray()
     boot()
   })
